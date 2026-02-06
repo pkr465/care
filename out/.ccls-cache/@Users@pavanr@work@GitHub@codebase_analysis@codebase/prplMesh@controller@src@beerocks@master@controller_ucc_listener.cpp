@@ -1,0 +1,710 @@
+/* SPDX-License-Identifier: BSD-2-Clause-Patent
+ *
+ * SPDX-FileCopyrightText: 2019-2020 the prplMesh contributors (see AUTHORS.md)
+ *
+ * This code is subject to the terms of the BSD+Patent license.
+ * See LICENSE file for more details.
+ */
+
+#include "controller_ucc_listener.h"
+#include "son_actions.h"
+
+#include <tlvf/ieee_1905_1/tlvAlMacAddress.h>
+#include <tlvf/ieee_1905_1/tlvMacAddress.h>
+#include <tlvf/wfa_map/tlvProfile2Default802dotQSettings.h>
+#include <tlvf/wfa_map/tlvProfile2TrafficSeparationPolicy.h>
+
+using namespace beerocks;
+
+controller_ucc_listener::controller_ucc_listener(db &database, ieee1905_1::CmduMessageTx &cmdu,
+                                                 std::unique_ptr<beerocks::UccServer> ucc_server)
+    : beerocks_ucc_listener(cmdu, std::move(ucc_server)), m_database(database)
+{
+    m_ucc_listener_run_on = eUccListenerRunOn::CONTROLLER;
+
+    // Install handlers for WFA-CA commands
+    beerocks::beerocks_ucc_listener::CommandHandlers handlers;
+    handlers.on_dev_reset_default =
+        [&](int fd, const std::unordered_map<std::string, std::string> &params) {
+            handle_dev_reset_default(fd, params);
+        };
+    handlers.on_dev_set_config = [&](const std::unordered_map<std::string, std::string> &params,
+                                     std::string &err_string) {
+        return handle_dev_set_config(params, err_string);
+    };
+    set_handlers(handlers);
+}
+
+controller_ucc_listener::~controller_ucc_listener() { clear_handlers(); }
+
+/**
+ * @brief Returns string filled with reply to "DEVICE_GET_INFO" command.
+ *
+ * @return const std::string Device info in UCC reply format.
+ */
+std::string controller_ucc_listener::fill_version_reply_string()
+{
+    return std::string("vendor,") + m_database.settings_vendor() + std::string(",model,") +
+           m_database.settings_model() + std::string(",version,") + BEEROCKS_VERSION;
+}
+
+/**
+ * @brief Clear configuration on Controller database.
+ *
+ * @return true on success and false otherwise.
+ */
+bool controller_ucc_listener::clear_configuration()
+{
+    m_database.clear_bss_info_configuration();
+    m_database.clear_traffic_separation_configurations();
+    m_database.clear_default_8021q_settings();
+    m_database.disable_periodic_link_metrics_requests();
+    return true;
+}
+
+/**
+ * @brief Clear configuration on Controller database for an Agent.
+ *
+ * @return true on success and false otherwise.
+ */
+bool controller_ucc_listener::clear_configuration(const sMacAddr &al_mac)
+{
+    m_database.clear_bss_info_configuration(al_mac);
+    m_database.clear_traffic_separation_configurations(al_mac);
+    m_database.clear_default_8021q_settings(al_mac);
+    return true;
+}
+
+/**
+ * @brief get parameter command
+ *
+ * get controller parameter
+ *
+ * @param[in] params command parsed parameter map
+ * @param[out] value returned parameter or error on failure
+ * @return true on success
+ * @return false on failure
+ */
+bool controller_ucc_listener::handle_dev_get_param(
+    std::unordered_map<std::string, std::string> &params, std::string &value)
+{
+    auto parameter = params["parameter"];
+    std::transform(parameter.begin(), parameter.end(), parameter.begin(), ::tolower);
+    if (parameter == "alid") {
+        value = tlvf::mac_to_string(m_database.get_local_bridge_mac());
+        return true;
+    } else if (parameter == "macaddr" || parameter == "bssid") {
+        if (params.find("ruid") == params.end()) {
+            value = "missing ruid";
+            return false;
+        }
+        if (params.find("ssid") == params.end()) {
+            value = "missing ssid";
+            return false;
+        }
+        auto ruid                            = tlvf::mac_from_string(params["ruid"]);
+        auto ssid                            = params["ssid"];
+        std::shared_ptr<Agent::sRadio> radio = m_database.get_radio_by_uid(ruid);
+        if (!radio) {
+            return false;
+        }
+        if (radio->bsses.empty()) {
+            value = "ruid " + tlvf::mac_to_string(ruid) + " not found";
+            return false;
+        }
+        for (const auto &bss : radio->bsses) {
+            if (bss.second->ssid == ssid) {
+                value = tlvf::mac_to_string(bss.first);
+                return true;
+            }
+        }
+        value = "macaddr/bssid not found for ruid " + tlvf::mac_to_string(ruid) + " ssid " + ssid;
+        return false;
+    }
+    value = "parameter " + parameter + " not supported";
+    return false;
+}
+
+/**
+ * @brief Send CMDU to destined Agent.
+ *
+ * @param[in] dest_mac Agents mac address.
+ * @param[in] cmdu_tx CMDU object.
+ * @return true if successful, false if not.
+ */
+bool controller_ucc_listener::send_cmdu_to_destination(ieee1905_1::CmduMessageTx &cmdu_tx,
+                                                       const std::string &dest_mac)
+{
+    return son_actions::send_cmdu_to_agent(tlvf::mac_from_string(dest_mac), cmdu_tx, m_database);
+}
+
+bool controller_ucc_listener::handle_start_wps_registration(const std::string &band,
+                                                            std::string &err_string)
+{
+    err_string = "wps registration not supported in controller mode";
+    return false;
+}
+
+bool controller_ucc_listener::handle_dev_set_rfeature(
+    const std::unordered_map<std::string, std::string> &params, std::string &err_string)
+{
+    err_string = "dev set rfeature not supported in controller mode";
+    return false;
+}
+
+bool controller_ucc_listener::handle_dev_exec_action(
+    const std::unordered_map<std::string, std::string> &params, std::string &err_string)
+{
+    auto action_type_it = params.find("dppactiontype");
+    if (action_type_it != params.end()) {
+        auto &action_type = action_type_it->second;
+        if (action_type != "SetPeerBootstrap") {
+            err_string = "DPPActionType is not 'SetPeerBootstrap', value is '" + action_type + "'";
+            return false;
+        }
+
+        auto dpp_bootstrapping_data_bytes_it = params.find("dppbootstrappingdata");
+        if (dpp_bootstrapping_data_bytes_it == params.end()) {
+            err_string = "DPPBootstrappingData is missing";
+            return false;
+        }
+        auto &dpp_bootstrapping_data_bytes = dpp_bootstrapping_data_bytes_it->second;
+
+        auto dpp_bootstrapping_data_str =
+            beerocks::string_utils::bytes_string_to_string(dpp_bootstrapping_data_bytes);
+
+        LOG(DEBUG) << "bootstrapping data: " << dpp_bootstrapping_data_str;
+
+        // dpp_bootstrapping_data is now look like that:
+        // e.g. DPP:V:2;K:MDkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDIgADezecPyVDIgJVgdGBHGBdxRxGpNU7x9cHFBE=;;
+        // Need to parse it according to this rules:
+        //  DPP:
+        //  [C:<channel/opClass>,...;]                                                # Channel list
+        //  [M:<mac(e.g. aabbccddeeff);]                                              # MAC
+        //  [I:<any sequence of printable character except ';', no length limit>;]    # Information
+        //  [V:<at least 1 (ALPHA / DIGIT) character (e.g "1", "2", etc>;]            # Version
+        //  [H:<1-255 characters of (DIGIT / ALPHA / "." / "-" / ":")>;]              # Host
+        //  [<Any sequence of characters which is not one of
+        //    ("C", "M", "I", "V", "H", "K")>:
+        //    <any sequence of printable character except ';', no length limit>;]     # Reserve
+        //  K:<any sequence of (ALPHA / DIGIT / '+' / '/' / '=') , no length limit>;; # Public key
+
+        constexpr char dpp_str[]    = "DPP:";
+        constexpr auto dpp_str_size = sizeof(dpp_str) - 1;
+
+        auto found = dpp_bootstrapping_data_str.find(dpp_str, 0, dpp_str_size);
+        if (found == std::string::npos) {
+            err_string = "missing 'DPP:' prefix on bootstrapping data";
+            return false;
+        }
+        dpp_bootstrapping_data_str.erase(0, dpp_str_size);
+
+        constexpr char data_suffix_str[]    = ";;";
+        constexpr auto data_suffix_str_size = sizeof(data_suffix_str) - 1;
+        found = dpp_bootstrapping_data_str.rfind(data_suffix_str, std::string::npos,
+                                                 data_suffix_str_size);
+        if (found == std::string::npos) {
+            err_string = "missing ';;' suffix on bootstrapping data";
+            return false;
+        }
+        dpp_bootstrapping_data_str.erase(dpp_bootstrapping_data_str.size() - data_suffix_str_size,
+                                         data_suffix_str_size);
+
+        auto bootstrapping_data_elements = string_utils::str_split(dpp_bootstrapping_data_str, ';');
+
+        enum eDppInfoType { CHANNEL, MAC, INFORMATION, VERSION, HOST, PUBLIC_KEY, RESERVE };
+        static std::unordered_map<std::string, eDppInfoType> const dpp_info_conversion = {
+            {"C", eDppInfoType::CHANNEL},     {"M", eDppInfoType::MAC},
+            {"I", eDppInfoType::INFORMATION}, {"V", eDppInfoType::VERSION},
+            {"H", eDppInfoType::HOST},        {"K", eDppInfoType::PUBLIC_KEY}};
+        constexpr char general_parsing_error[] = "Failed to parse bootstrapping info";
+        for (const auto &element : bootstrapping_data_elements) {
+            // element = <X>:<"X info">
+            auto bootstrapping_data_info = string_utils::str_split(element, ':');
+            if (bootstrapping_data_info.size() != 2) {
+                err_string.assign(general_parsing_error);
+                return false;
+            }
+
+            // Get the Enum from the conversion table.
+            auto info_letter_it = dpp_info_conversion.find(bootstrapping_data_info[0]);
+            if (info_letter_it == dpp_info_conversion.end()) {
+                LOG(WARNING) << "Failed to detect bootstrapping info key: "
+                             << bootstrapping_data_info[0];
+                continue;
+            }
+            auto &data                        = bootstrapping_data_info[1];
+            auto &enrollee_bootstrapping_info = m_database.dpp_bootstrapping_info;
+            switch (info_letter_it->second) {
+            case eDppInfoType::CHANNEL: {
+                auto operating_class_channel_pairs = string_utils::str_split(data, ',');
+                for (const auto &pair : operating_class_channel_pairs) {
+                    auto operating_class_channel_pair_vec = string_utils::str_split(pair, '/');
+                    if (operating_class_channel_pair_vec.size() != 2) {
+                        err_string.assign(general_parsing_error);
+                        return false;
+                    }
+                    enrollee_bootstrapping_info.operating_class_channel.emplace(
+                        string_utils::stoi(operating_class_channel_pair_vec[0]),
+                        string_utils::stoi(operating_class_channel_pair_vec[1]));
+                }
+                break;
+            }
+            case eDppInfoType::MAC: {
+                enrollee_bootstrapping_info.mac = tlvf::mac_from_string(data);
+                break;
+            }
+            case eDppInfoType::INFORMATION: {
+                enrollee_bootstrapping_info.info = data;
+                break;
+            }
+            case eDppInfoType::VERSION: {
+                enrollee_bootstrapping_info.version = string_utils::stoi(data);
+                break;
+            }
+            case eDppInfoType::HOST: {
+                enrollee_bootstrapping_info.host = data;
+                break;
+            }
+            case eDppInfoType::PUBLIC_KEY: {
+                enrollee_bootstrapping_info.public_key = data;
+                break;
+            }
+            default: {
+                // Unhandled bootstrapping info
+                break;
+            }
+            }
+        }
+        std::string channels_str;
+        for (auto &ch : m_database.dpp_bootstrapping_info.operating_class_channel) {
+            channels_str += std::to_string(ch.first) + "\\" + std::to_string(ch.second) + ",";
+        }
+        LOG(DEBUG) << "channel:" << channels_str;
+        LOG(DEBUG) << "mac:" << m_database.dpp_bootstrapping_info.mac;
+        LOG(DEBUG) << "info:" << m_database.dpp_bootstrapping_info.info;
+        LOG(DEBUG) << "version:" << m_database.dpp_bootstrapping_info.version;
+        LOG(DEBUG) << "host:" << m_database.dpp_bootstrapping_info.host;
+        LOG(DEBUG) << "public_key:" << m_database.dpp_bootstrapping_info.public_key;
+
+        return true;
+    }
+    err_string = "command is not supported on the Controller";
+    return false;
+}
+
+bool controller_ucc_listener::handle_custom_command(
+    const std::unordered_map<std::string, std::string> &params, std::string &err_string)
+{
+    const auto &cmd = params.at("cmd");
+    if (cmd == "discovery_burst") {
+        /**
+         * @brief Send a burst of a given number @a repeats of Topology Discovery message from a
+         * given basic source mac @a base_mac.
+         * 
+         * @param base_mac Basic mac that will be used as source mac address and will be included
+         * in the TLV content. For every repeat, the mac least significate byte will increment.
+         * @param repeats Number of messages that will be sent. Limited to 255.
+         */
+
+        // Extract command parameters
+        static const std::string base_mac_param("base_mac");
+        auto it = params.find(base_mac_param);
+        if (it == params.end()) {
+            err_string = "missing " + base_mac_param;
+            return false;
+        }
+        auto base_mac = tlvf::mac_from_string(it->second);
+
+        static const std::string repeats_param("repeats");
+        it = params.find(repeats_param);
+        if (it == params.end()) {
+            err_string = "missing " + repeats_param;
+            return false;
+        }
+        unsigned repeats = beerocks::string_utils::stoi(it->second);
+        repeats &= 0xFF;
+
+        static const std::string dst_param("dst");
+        it       = params.find(dst_param);
+        auto dst = it == params.end() ? net::network_utils::MULTICAST_1905_MAC_ADDR
+                                      : tlvf::mac_from_string(it->second);
+
+        // Creatring the message
+        auto cmdu_hdr = m_cmdu_tx.create(0, ieee1905_1::eMessageType::TOPOLOGY_DISCOVERY_MESSAGE);
+        auto tlvAlMacAddress = m_cmdu_tx.addClass<ieee1905_1::tlvAlMacAddress>();
+        if (!tlvAlMacAddress) {
+            LOG(ERROR) << "Failed to create tlvAlMacAddress tlv";
+            return false;
+        }
+        tlvAlMacAddress->mac() = base_mac;
+
+        auto tlvMacAddress = m_cmdu_tx.addClass<ieee1905_1::tlvMacAddress>();
+        if (!tlvMacAddress) {
+            LOG(ERROR) << "Failed to create tlvMacAddress tlv";
+            return false;
+        }
+        tlvMacAddress->mac() = base_mac;
+
+        auto controller_ctx = m_database.get_controller_ctx();
+        if (!controller_ctx) {
+            LOG(ERROR) << "controller_ctx == nullptr";
+            return false;
+        }
+
+        auto start = std::chrono::steady_clock::now();
+
+        for (uint8_t i = 0; i < repeats; ++i) {
+            cmdu_hdr->message_id() = i;
+            cmdu_hdr->class_swap();
+            tlvAlMacAddress->mac().oct[5] = i;
+            tlvMacAddress->mac().oct[5]   = i;
+            controller_ctx->send_cmdu_to_broker(m_cmdu_tx, dst, tlvAlMacAddress->mac());
+        }
+
+        auto delta = std::chrono::duration_cast<std::chrono::microseconds>(
+                         std::chrono::steady_clock::now() - start)
+                         .count();
+        LOG(DEBUG) << "Sent " << repeats << " discovery messages in " << delta << " us";
+    }
+    return true;
+}
+
+bool controller_ucc_listener::handle_dev_send_1905_internally(
+    const std::unordered_map<std::string, std::string> &params, uint16_t m_id)
+{
+    auto dest_alid = params.at("destalid");
+    std::transform(dest_alid.begin(), dest_alid.end(), dest_alid.begin(), ::tolower);
+
+    const auto message_type_str = params.at("messagetypevalue");
+    const auto message_type =
+        static_cast<ieee1905_1::eMessageType>(std::strtoul(message_type_str.c_str(), nullptr, 16));
+
+    if (message_type == ieee1905_1::eMessageType::CHANNEL_SELECTION_REQUEST_MESSAGE) {
+        if (params.size() > 2) { // skip if we have concrete info about required TLVs
+            LOG(DEBUG)
+                << "There is info about required TLVs for CHANNEL_SELECTION_REQUEST_MESSAGE. Dev "
+                   "send 1905 will be handled in a general ucc_listener way";
+            return false;
+        }
+
+        const auto agent_mac = tlvf::mac_from_string(dest_alid);
+        const auto agent     = m_database.get_agent(agent_mac);
+        if (!agent) {
+            LOG(ERROR) << "Agent with MAC " << agent_mac << " not found in database.";
+            return false;
+        }
+        const auto &agent_radios = agent->radios;
+
+        // Build 1905.1 message CMDU to send to the agent.
+        if (!m_cmdu_tx.create(0, ieee1905_1::eMessageType::CHANNEL_SELECTION_REQUEST_MESSAGE)) {
+            LOG(ERROR) << "CMDU creation of type CHANNEL_SELECTION_REQUEST_MESSAGE, has failed";
+            return false;
+        }
+
+        // setting message id
+        m_cmdu_tx.setMessageId(m_id);
+
+        for (const auto &radio_iter : agent_radios) {
+            const auto &radio_mac        = radio_iter.first;
+            const auto &radio_preference = m_database.get_radio_channel_preference(radio_mac);
+
+            const auto &preference_report =
+                convert_preference_report_map_to_tlv_format(radio_preference);
+
+            // Create Channel-Preference TLV.
+            if (!create_channel_preference_tlv(radio_mac, preference_report)) {
+                LOG(ERROR) << "Failed to create Channel Preference TLV!";
+                return false;
+            }
+        }
+
+        // Send CMDU to agent.
+        LOG(INFO) << "Send CHANNEL_SELECTION_REQUEST_MESSAGE to agent: " << agent_mac;
+        if (send_cmdu_to_destination(m_cmdu_tx, dest_alid)) {
+            LOG(ERROR) << "Failed sending message!";
+            m_cmdu_tx.reset();
+            return false;
+        }
+        m_cmdu_tx.reset();
+        return true;
+    }
+    return false; // Let message sending with message_type to be handled in a general ucc_listener way
+}
+
+void controller_ucc_listener::handle_dev_reset_default(
+    int fd, const std::unordered_map<std::string, std::string> &params)
+{
+    // Clear configuration on Controller's database.
+    clear_configuration();
+
+    // Send back second reply to UCC client.
+    send_reply(fd);
+}
+
+bool controller_ucc_listener::handle_dev_set_config(
+    const std::unordered_map<std::string, std::string> &params, std::string &err_string)
+{
+    if (params.find("backhaul") != params.end()) {
+        err_string = "parameter 'backhaul' is not relevant to the controller";
+        return false;
+    }
+
+    std::string key("bss_info");
+    if (params.find(key) == params.end()) {
+        err_string = "command has no bss_info configuration";
+        return false;
+    }
+
+    if (params.find("first_bss") != params.end()) {
+        m_bss_info_cleared_mac.clear();
+    }
+
+    son::wireless_utils::sBssInfoConf bss_info_conf;
+    auto al_mac = parse_bss_info(params.at(key), bss_info_conf, err_string);
+    if (al_mac.empty()) {
+        err_string += (" on " + key);
+        return false;
+    }
+
+    key = "mld_groupID";
+    if (params.find(key) != params.end()) {
+        bss_info_conf.mld_id = params.at(key)[0] - 'A' + 1;
+    }
+
+    auto mac = tlvf::mac_from_string(al_mac);
+    if (m_bss_info_cleared_mac.find(mac) == m_bss_info_cleared_mac.end()) {
+        clear_configuration(mac);
+        m_bss_info_cleared_mac.insert(mac);
+    }
+
+    // If SSID is empty, tear down - clear configuration for this mac.
+    if (bss_info_conf.ssid.empty()) {
+        clear_configuration(mac);
+        return true;
+    }
+    m_database.add_bss_info_configuration(mac, bss_info_conf);
+
+    std::list<tlv_hex_t> tlv_hex_list;
+    if (!get_send_1905_1_tlv_hex_list(tlv_hex_list, params, err_string)) {
+        return false;
+    }
+
+    if (tlv_hex_list.empty()) {
+        // TLV list is not mandatory
+        return true;
+    }
+
+    // Use CMDU_TX buffer as a temporary buffer
+    uint8_t *buffer      = m_cmdu_tx.getMessageBuff();
+    size_t buffer_length = m_cmdu_tx.getMessageBuffLength();
+    for (const auto &tlv : tlv_hex_list) {
+        tlvPrefilledData prefilled_tlv(buffer, buffer_length);
+
+        if (!prefilled_tlv.add_tlv_from_strings(tlv, err_string)) {
+            LOG(ERROR) << err_string;
+            return false;
+        }
+
+        wfa_map::eTlvTypeMap type =
+            wfa_map::eTlvTypeMap(std::strtoul(tlv.type.c_str(), nullptr, 16));
+        switch (type) {
+        case wfa_map::eTlvTypeMap::TLV_PROFILE2_DEFAULT_802_1Q_SETTINGS: {
+            wfa_map::tlvProfile2Default802dotQSettings default_802_1q_tlv(buffer, buffer_length,
+                                                                          true);
+
+            wireless_utils::s8021QSettings config;
+            config.primary_vlan_id = default_802_1q_tlv.primary_vlan_id();
+            config.default_pcp     = default_802_1q_tlv.default_pcp();
+            m_database.add_default_8021q_settings(mac, config);
+        } break;
+        case wfa_map::eTlvTypeMap::TLV_PROFILE2_TRAFFIC_SEPARATION_POLICY: {
+            wfa_map::tlvProfile2TrafficSeparationPolicy traffic_separation_policy(
+                buffer, buffer_length, true);
+
+            uint8_t ssids_length = traffic_separation_policy.ssids_vlan_id_list_length();
+            for (uint8_t idx = 0; idx < ssids_length; idx++) {
+                auto ssid_tuple = traffic_separation_policy.ssids_vlan_id_list(idx);
+                if (!std::get<0>(ssid_tuple)) {
+                    err_string = "Failed getting ssid on index " + std::to_string(idx);
+                    LOG(ERROR) << err_string;
+                    return false;
+                }
+
+                auto &ssid_conf = std::get<1>(ssid_tuple);
+
+                wireless_utils::sTrafficSeparationSsid config;
+                config.ssid    = ssid_conf.ssid_name_str();
+                config.vlan_id = ssid_conf.vlan_id();
+                m_database.add_traffic_separation_configuration(mac, config);
+            }
+        } break;
+        default: {
+            LOG(WARNING) << "Unexpected TLV type " << std::hex << int(type) << std::dec;
+        } break;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * @brief Parse bss_info string into bss_info_conf_struct.
+ *
+ * @param[in] bss_info_str String containing bss info configuration.
+ * @param[out] bss_info_conf Controller database struct filled with configuration.
+ * @param[out] err_string Contains an error description if the function fails.
+ * @return al_mac on success, empty string if not.
+ */
+std::string
+controller_ucc_listener::parse_bss_info(const std::string &bss_info_str,
+                                        son::wireless_utils::sBssInfoConf &bss_info_conf,
+                                        std::string &err_string)
+{
+    auto confs = string_utils::str_split(bss_info_str, ' ');
+
+    /*
+    The Control API specification defines 8 parameters except for the case of
+    clearing the BSS info stored for a specific operating class, define only
+    two parameters: ALID and operating class.
+    */
+    if ((confs.size() != 8) && (confs.size() != 2)) {
+        err_string = "missing configuration";
+        return std::string();
+    }
+
+    // Alid
+    std::string al_mac(confs[0]);
+    if (!net::network_utils::is_valid_mac(al_mac)) {
+        err_string = "invalid al_mac";
+        return std::string();
+    }
+
+    bss_info_conf = {};
+
+    // Operating class
+    const auto &operating_class_str = confs[1];
+    if (operating_class_str == "8x") {
+        bss_info_conf.operating_class = {81, 83, 84};
+    } else if (operating_class_str == "11x") {
+        bss_info_conf.operating_class = {115, 116};
+    } else if (operating_class_str == "12x") {
+        bss_info_conf.operating_class = {124, 125, 126};
+    } else if (operating_class_str == "13x") {
+        bss_info_conf.operating_class = {131, 132, 133, 134, 135, 136, 137};
+    } else {
+        err_string = "invalid operating class " + operating_class_str;
+        return std::string();
+    }
+
+    if (confs.size() == 2) {
+        return al_mac;
+    }
+
+    // SSID
+    bss_info_conf.ssid = confs[2];
+    if (bss_info_conf.ssid.size() > WSC::eWscLengths::WSC_MAX_SSID_LENGTH) {
+        err_string = "ssid is too long";
+        return std::string();
+    }
+
+    // Authentication type
+    auto &authentication_type_str = confs[3];
+    if (!beerocks_ucc_listener::validate_hex_notation(authentication_type_str, 2)) {
+        err_string = "invalid authentication type format";
+        return std::string();
+    }
+
+    uint16_t authentication_type = std::strtol(authentication_type_str.c_str(), nullptr, 16);
+
+    bss_info_conf.authentication_type = static_cast<WSC::eWscAuth>(authentication_type);
+
+    // Encryption type
+    auto &encryption_type_str = confs[4];
+    if (!beerocks_ucc_listener::validate_hex_notation(encryption_type_str, 2)) {
+        err_string = "invalid encryption type format";
+        return std::string();
+    }
+
+    uint16_t encryption_type = std::strtol(encryption_type_str.c_str(), nullptr, 16);
+
+    if (!WSC::eWscEncrValidate::check(encryption_type)) {
+        err_string = "invalid encryption type value";
+        return std::string();
+    }
+    bss_info_conf.encryption_type = static_cast<WSC::eWscEncr>(encryption_type);
+
+    // Network key
+    bss_info_conf.network_key = confs[5];
+    if (bss_info_conf.network_key.size() > WSC::eWscLengths::WSC_MAX_NETWORK_KEY_LENGTH) {
+        err_string = "network key is too long";
+        return std::string();
+    }
+
+    // Bit 6 of Multi-AP IE's extention attribute, aka "Backhaul BSS"
+    const auto &bit_6_str = confs[6];
+    if (bit_6_str != "0" && bit_6_str != "1") {
+        err_string = "invalid bit 6 of Multi-AP IE's extention attribute";
+        return std::string();
+    }
+    if (bit_6_str == "1") {
+        bss_info_conf.backhaul = true;
+    }
+
+    // Bit 5 of Multi-AP IE's extention attribute, aka "Fronthaul BSS"
+    const auto &bit_5_str = confs[7];
+    if (bit_5_str != "0" && bit_5_str != "1") {
+        err_string = "invalid bit 5 of Multi-AP IE's extention attribute";
+        return std::string();
+    }
+    if (bit_5_str == "1") {
+        bss_info_conf.fronthaul = true;
+    }
+
+    bss_info_conf.teardown = false;
+    return al_mac;
+}
+
+radio_preference_tlv_format controller_ucc_listener::convert_preference_report_map_to_tlv_format(
+    const Agent::sRadio::PreferenceReportMap &radio_preference)
+{
+    radio_preference_tlv_format map;
+    for (const auto &iter : radio_preference) {
+        map[std::make_pair(iter.first.first, iter.second)].insert(iter.first.second);
+    }
+    return map;
+}
+
+bool controller_ucc_listener::create_channel_preference_tlv(
+    const sMacAddr &radio_mac, const radio_preference_tlv_format &formatted_preference)
+{
+    auto channel_preference_tlv = m_cmdu_tx.addClass<wfa_map::tlvChannelPreference>();
+    if (!channel_preference_tlv) {
+        LOG(ERROR) << "addClass ieee1905_1::tlvChannelPreference has failed";
+        return false;
+    }
+
+    channel_preference_tlv->radio_uid() = radio_mac;
+
+    for (const auto &iter : formatted_preference) {
+        const auto operating_class     = iter.first.first;
+        const auto reported_preference = iter.first.second;
+        const auto &channel_set        = iter.second;
+
+        std::vector<uint8_t> ch_list(channel_set.begin(), channel_set.end());
+
+        auto operating_classes_list = channel_preference_tlv->create_operating_classes_list();
+        operating_classes_list->operating_class()  = operating_class;
+        operating_classes_list->flags().preference = reported_preference;
+        if (!operating_classes_list->set_channel_list(ch_list.data(), ch_list.size())) {
+            LOG(ERROR) << "set_channel_list() failed";
+            return false;
+        }
+
+        if (!channel_preference_tlv->add_operating_classes_list(operating_classes_list)) {
+            LOG(ERROR) << "add_operating_classes_list() has failed!";
+            return false;
+        }
+    }
+    return true;
+}

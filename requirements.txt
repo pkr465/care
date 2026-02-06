@@ -1,0 +1,28 @@
+colorama==0.4.6
+numpy<2.0.0
+openpyxl>=3.1.2
+pandas>=2.2.0
+PyYAML==6.0.1
+Requests==2.31.0
+tiktoken>=0.7.0
+tqdm==4.65.0
+xlwings==0.29.1
+streamlit>=1.24.0
+plotly>=5.15.0
+psycopg2-binary>=2.9.6
+sqlalchemy>=2.0.15
+python-dotenv
+psutil
+rich
+langgraph 
+langchain-core
+langchain>=0.0.350
+qgenie-sdk[all]
+langchain-postgres
+networkx
+xlsxwriter
+matplotlib
+pylspclient
+clang
+--extra-index-url https://devpi.qualcomm.com/qcom/dev/+simple
+--trusted-host devpi.qualcomm.com
