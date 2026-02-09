@@ -1,10 +1,17 @@
 """
-Health metrics calculation coordinator for C/C++ codebases (enhanced)
+Health metrics calculation coordinator for C/C++ codebases (enhanced).
+
+Orchestrates:
+- 9 existing regex/heuristic analyzers (quality, complexity, security, etc.)
+- Deep static analysis adapters (CCLS/libclang, Lizard, Flawfinder)
 """
 
 from typing import Dict, List, Any, Optional
 import json
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 # Existing Analyzers
 from agents.analyzers.quality_analyzer import QualityAnalyzer
@@ -16,6 +23,21 @@ from agents.analyzers.test_coverage_analyzer import TestCoverageAnalyzer
 from agents.analyzers.potential_deadlock_analyzer import PotentialDeadlockAnalyzer
 from agents.analyzers.null_pointer_analyzer import NullPointerAnalyzer
 from agents.analyzers.memory_corruption_analyzer import MemoryCorruptionAnalyzer
+
+# Deep static analysis adapters (optional — graceful degradation)
+try:
+    from agents.adapters import (
+        DeadCodeAdapter,
+        ASTComplexityAdapter,
+        SecurityAdapter,
+        CallGraphAdapter,
+        FunctionMetricsAdapter,
+        ExcelReportAdapter,
+    )
+    ADAPTERS_AVAILABLE = True
+except ImportError as _e:
+    ADAPTERS_AVAILABLE = False
+    logger.info(f"Static analysis adapters not available: {_e}")
 
 
 class MetricsCalculator:
@@ -29,6 +51,7 @@ class MetricsCalculator:
         output_dir: str,
         project_root: Optional[str] = None,
         debug: bool = False,
+        enable_adapters: bool = False,
     ):
         """Initialize metrics calculator with all analyzers."""
         self.codebase_path = codebase_path
@@ -52,6 +75,18 @@ class MetricsCalculator:
         self.deadlock_analyzer = PotentialDeadlockAnalyzer(debug=debug)
         self.null_pointer_analyzer = NullPointerAnalyzer(debug=debug)
         self.memory_corruption_analyzer = MemoryCorruptionAnalyzer(debug=debug)
+
+        # Deep static analysis adapters (optional — require both flag and availability)
+        self.adapters_enabled = enable_adapters and ADAPTERS_AVAILABLE
+        if self.adapters_enabled:
+            self.dead_code_adapter = DeadCodeAdapter(debug=debug)
+            self.ast_complexity_adapter = ASTComplexityAdapter(debug=debug)
+            self.security_adapter = SecurityAdapter(debug=debug)
+            self.call_graph_adapter = CallGraphAdapter(debug=debug)
+            self.function_metrics_adapter = FunctionMetricsAdapter(debug=debug)
+            self.excel_report_adapter = ExcelReportAdapter(
+                output_dir=output_dir, debug=debug
+            )
     
     def _write_metric_report(self, metric_name: str, data: Any) -> None:
         """Write an individual metric report file into the output_dir."""
@@ -110,10 +145,116 @@ class MetricsCalculator:
         metrics["runtime_risk_score"] = self._calculate_runtime_risk_score(file_cache)
         self._write_metric_report("runtime_risk_score", metrics["runtime_risk_score"])
         
-        # 9. Overall
+        # 9. Deep static analysis adapters
+        if self.adapters_enabled:
+            metrics["adapters"] = self._run_adapters(file_cache, dependency_graph)
+            self._write_metric_report("adapter_results", metrics["adapters"])
+
+        # 10. Overall
         metrics["overall_health"] = self._calculate_overall_health_score(metrics)
 
         return metrics
+
+    # ------------------------------------------------------------------ #
+    # Deep Static Analysis Adapters
+    # ------------------------------------------------------------------ #
+
+    def _init_ccls_navigator(self) -> Optional[Any]:
+        """
+        Create a shared CCLSCodeNavigator for adapter use.
+
+        Returns None if ccls or libclang are not available — adapters
+        that require CCLS will degrade gracefully.
+        """
+        try:
+            from dependency_builder.ccls_code_navigator import CCLSCodeNavigator
+            from dependency_builder.config import DependencyBuilderConfig
+
+            config = DependencyBuilderConfig.from_env()
+            cache_path = os.path.join(self.output_dir, ".ccls_cache")
+            os.makedirs(cache_path, exist_ok=True)
+
+            navigator = CCLSCodeNavigator(
+                project_root=self.codebase_path,
+                cache_path=cache_path,
+                logger=logger,
+                config=config,
+            )
+            return navigator
+        except Exception as exc:
+            logger.warning(f"CCLSCodeNavigator init failed (adapters will degrade): {exc}")
+            return None
+
+    def _run_adapters(
+        self,
+        file_cache: List[Dict[str, Any]],
+        dependency_graph: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Execute all deep static analysis adapters and generate the Excel report.
+
+        Returns a dict mapping adapter names to their result dicts.
+        """
+        ccls_navigator = None
+        adapter_results: Dict[str, Any] = {}
+
+        try:
+            # Initialize CCLS once for all adapters that need it
+            ccls_navigator = self._init_ccls_navigator()
+
+            # Run each adapter (order: standalone tools first, CCLS-dependent second)
+            adapters = [
+                ("ast_complexity", self.ast_complexity_adapter),
+                ("security", self.security_adapter),
+                ("dead_code", self.dead_code_adapter),
+                ("call_graph", self.call_graph_adapter),
+                ("function_metrics", self.function_metrics_adapter),
+            ]
+
+            for name, adapter in adapters:
+                try:
+                    result = adapter.analyze(
+                        file_cache,
+                        ccls_navigator=ccls_navigator,
+                        dependency_graph=dependency_graph,
+                    )
+                    adapter_results[name] = result
+                    score = result.get("score", 0)
+                    grade = result.get("grade", "F")
+                    avail = result.get("tool_available", False)
+                    logger.info(
+                        f"Adapter {name}: score={score} grade={grade} tool_available={avail}"
+                    )
+                except Exception as exc:
+                    logger.warning(f"Adapter {name} failed: {exc}")
+                    adapter_results[name] = {
+                        "score": 0.0,
+                        "grade": "F",
+                        "metrics": {"error": str(exc)},
+                        "issues": [f"Adapter failed: {exc}"],
+                        "details": [],
+                        "tool_available": False,
+                    }
+
+            # Generate detailed_code_review.xlsx from adapter results
+            try:
+                self.excel_report_adapter.analyze(
+                    file_cache=[],
+                    adapter_results=adapter_results,
+                )
+                logger.info("detailed_code_review.xlsx generated successfully")
+            except Exception as exc:
+                logger.warning(f"Excel report generation failed: {exc}")
+
+        finally:
+            # Clean up CCLS process
+            if ccls_navigator is not None:
+                try:
+                    ccls_navigator.killCCLSProcess()
+                except Exception:
+                    pass
+
+        return adapter_results
 
     # ------------------------------------------------------------------ #
     # New: Runtime Risk Score Aggregation

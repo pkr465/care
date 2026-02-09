@@ -105,7 +105,7 @@ class MaintainabilityAnalyzer:
         """
         Perform maintainability analysis on a file cache + dependency graph.
 
-        file_cache: entries from CodebaseAnalysisAgent._build_cache, each with:
+        file_cache: entries from StaticAnalyzerAgent file discovery, each with:
             {
               "file_name": str,
               "file_relative_path": str,

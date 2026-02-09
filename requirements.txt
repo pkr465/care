@@ -1,25 +1,63 @@
-colorama==0.4.6
-numpy<2.0.0
-openpyxl>=3.1.2
-pandas>=2.2.0
-PyYAML==6.0.1
-Requests==2.31.0
-tiktoken>=0.7.0
-tqdm==4.65.0
-xlwings==0.29.1
-streamlit>=1.24.0
-plotly>=5.15.0
-psycopg2-binary>=2.9.6
-sqlalchemy>=2.0.15
-python-dotenv
-psutil
-rich
-langgraph 
-langchain-core
-langchain>=0.0.350
-langchain-postgres
-networkx
-xlsxwriter
-matplotlib
-pylspclient
-clang
+# =============================================================================
+# QGenie — C/C++ Codebase Health Analysis & Refactor Engine
+# =============================================================================
+# Install:  pip install -r requirements.txt
+# Python:   3.12+ recommended
+# =============================================================================
+
+# ── Core Runtime ─────────────────────────────────────────────────────────────
+psutil                          # System/process memory monitoring
+rich                            # Rich terminal output, progress bars, tables
+python-dotenv                   # Load .env files into os.environ
+PyYAML>=6.0.1                   # global_config.yaml parsing
+# colorama>=0.4.6               # Cross-platform colored terminal text (not directly imported)
+# tqdm>=4.65.0                  # Progress bars (not directly imported)
+
+# ── Data Processing & Excel ──────────────────────────────────────────────────
+numpy<2.0.0                     # Numerical computing
+pandas>=2.2.0                   # DataFrame manipulation
+openpyxl>=3.1.2                 # Read/write .xlsx files
+# xlsxwriter                     # Excel writer backend (openpyxl used instead)
+Pillow                          # Image processing (img2pdf, reports)
+img2pdf                         # Image-to-PDF conversion
+xxhash                          # Fast hashing (dependency_builder caching)
+
+# ── LLM Providers ────────────────────────────────────────────────────────────
+# At least one provider is required for LLM-powered analysis.
+# Set model in global_config.yaml as "provider::model_name".
+anthropic                       # Anthropic Claude API (anthropic::claude-*)
+langchain>=0.0.350              # LangChain framework
+langchain-core                  # LangChain core abstractions
+langchain-openai                # Azure OpenAI provider (azure::gpt-*)
+langchain-google-vertexai       # Google Vertex AI provider (vertexai::gemini-*)
+# qgenie                        # QGenie provider — install separately if used
+
+# ── Workflow Orchestration ───────────────────────────────────────────────────
+langgraph                       # LangGraph state-machine workflow engine
+
+# ── Database & Vector DB ─────────────────────────────────────────────────────
+psycopg2-binary>=2.9.6          # PostgreSQL driver
+sqlalchemy>=2.0.15              # SQL toolkit / ORM
+langchain-postgres              # PGVector LangChain integration
+
+# ── Code Analysis (Regex-based analyzers) ────────────────────────────────────
+networkx                        # Graph/network analysis (dependency graphs)
+# tiktoken>=0.7.0               # Token counting (not directly imported currently)
+matplotlib                      # Visualization (graphs, charts)
+
+# ── CCLS / libclang Integration (dependency_builder) ─────────────────────────
+pylspclient                     # Language Server Protocol client for CCLS
+clang>=14.0                     # libclang Python bindings (AST parsing)
+
+# ── Deep Static Analysis Adapters (--enable-adapters) ────────────────────────
+# These are optional; the system degrades gracefully if not installed.
+lizard                          # AST-based cyclomatic complexity analysis
+flawfinder                      # CWE-mapped C/C++ security vulnerability scanner
+
+# ── UI (Streamlit Dashboard) ─────────────────────────────────────────────────
+streamlit>=1.24.0               # Web UI framework
+# plotly>=5.15.0                # Interactive charts (not directly imported currently)
+
+# ── Optional / Legacy ────────────────────────────────────────────────────────
+# xlwings==0.29.1               # Windows-only Excel automation (not required)
+# streamlit-tools               # Custom Streamlit helpers (if using ui/)

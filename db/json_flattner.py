@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Union
 
 class JsonFlattener:
     """
-    Flattens the healthreport.json produced by CodebaseAnalysisAgent
+    Flattens the healthreport.json produced by StaticAnalyzerAgent
     into a list of flat, embedding-friendly records suitable for NDJSON
     and vector DB ingestion.
 

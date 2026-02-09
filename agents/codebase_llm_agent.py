@@ -150,7 +150,8 @@ class CodebaseLLMAgent:
     def run_analysis(
         self,
         output_filename: str = "detailed_code_review.xlsx",
-        email_recipients: Optional[List[str]] = None
+        email_recipients: Optional[List[str]] = None,
+        adapter_results: Optional[Dict] = None,
     ) -> str:
         """
         Main Execution Pipeline:
@@ -162,6 +163,8 @@ class CodebaseLLMAgent:
         :param output_filename: Name/path for the Excel report.
         :param email_recipients: List of email addresses to send report to.
                                  If None, uses config or skips.
+        :param adapter_results: Optional dict of deep static adapter results.
+                                If provided, appends static_ tabs to the Excel.
         :return: Path to the generated Excel report.
         """
         logger.info(f"[*] Starting analysis (Run ID: {self.run_id}) on: {self.codebase_path}")
@@ -224,7 +227,7 @@ class CodebaseLLMAgent:
         else:
             full_out_path = os.path.join(self.output_dir, output_filename)
 
-        excel_path = self._generate_excel_report(full_out_path)
+        excel_path = self._generate_excel_report(full_out_path, adapter_results=adapter_results)
 
         # --- 5. Email Notification ---
         if email_recipients is None and self.config:
@@ -558,8 +561,17 @@ class CodebaseLLMAgent:
                 }
                 f.write(json.dumps(agent_metric) + '\n')
 
-    def _generate_excel_report(self, output_path: str) -> str:
-        """Generates comprehensive Excel file using ExcelWriter."""
+    def _generate_excel_report(
+        self, output_path: str, adapter_results: Optional[Dict] = None
+    ) -> str:
+        """Generates comprehensive Excel file using ExcelWriter.
+
+        Args:
+            output_path: Path for the output Excel file.
+            adapter_results: Optional dict of adapter_name -> result dict from
+                deep static analysis adapters. If provided, each adapter's
+                details are written as a static_<name> tab.
+        """
         # Ensure directory exists
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -628,6 +640,35 @@ class CodebaseLLMAgent:
                     "Code", "Fixed_Code", "Feedback", "Constraints"
                 ]
                 writer.add_table_sheet(headers, [], sheet_name="Analysis")
+
+            # --- 3. Append static_ adapter tabs (if available) ---
+            if adapter_results:
+                adapter_headers = [
+                    "File", "Function", "Line", "Description",
+                    "Severity", "Category", "CWE"
+                ]
+                for adapter_name, result in adapter_results.items():
+                    details = result.get("details", [])
+                    if not details:
+                        continue
+                    sheet_name = f"static_{adapter_name}"[:31]
+                    rows = [
+                        [
+                            d.get("file", ""),
+                            d.get("function", ""),
+                            d.get("line", ""),
+                            d.get("description", ""),
+                            d.get("severity", ""),
+                            d.get("category", ""),
+                            d.get("cwe", ""),
+                        ]
+                        for d in details
+                    ]
+                    writer.add_table_sheet(
+                        adapter_headers, rows,
+                        sheet_name=sheet_name,
+                        status_column="Severity",
+                    )
 
             writer.save()
             logger.info(f"[*] Success! Report saved to: {output_path}")

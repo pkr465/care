@@ -8,8 +8,8 @@ flattening to embedding-ready NDJSON, and ingestion into a PostgreSQL vector DB.
 Key stages:
 1. PostgreSQL setup (optional, if vector DB enabled)
 2. Codebase analysis:
-   - Incremental analyzers and/or CodebaseAnalysisAgent (LLM)
-   - OR Exclusive LLM Agent (CodebaseLLMAgent) for strictly Excel/CSV reporting
+   - StaticAnalyzerAgent: unified 7-phase pipeline (optional LLM enrichment)
+   - OR CodebaseLLMAgent for strictly Excel/CSV reporting
    - Writes canonical healthreport.json
 3. Flatten + NDJSON generation:
    - JsonFlattener -> *_flat.json
@@ -74,14 +74,13 @@ except ImportError as e:
     FLATTENING_AVAILABLE = False
     console.print(f"[yellow]Warning: Flattening/NDJSON tools not available: {e}[/yellow]")
 
-# Standard Codebase analysis agents (Health Report focus)
+# Unified Static Analyzer Agent (Health Report focus)
 try:
-    from agents.codebase_analysis_agent import CodebaseAnalysisAgent
-    LLM_AGENT_AVAILABLE = True
+    from agents.static_analyzer_agent import StaticAnalyzerAgent
+    STATIC_ANALYZER_AVAILABLE = True
 except ImportError as e:
-    LLM_AGENT_AVAILABLE = False
-    console.print(f"[yellow]Warning: LLM CodebaseAnalysisAgent not available: {e}[/yellow]")
-    console.print("[yellow]Using incremental analysis only.[/yellow]")
+    STATIC_ANALYZER_AVAILABLE = False
+    console.print(f"[yellow]Warning: StaticAnalyzerAgent not available: {e}[/yellow]")
 
 # Exclusive LLM Agent (Excel/CSV Report focus)
 try:
@@ -91,12 +90,19 @@ except ImportError as e:
     LLM_EXCLUSIVE_AGENT_AVAILABLE = False
     console.print(f"[yellow]Warning: CodebaseLLMAgent not available: {e}[/yellow]")
 
+# Deep static analysis adapters (Lizard, Flawfinder, CCLS)
 try:
-    from agents.incremental_analyzer import IncrementalCodebaseAnalyzer
-    INCREMENTAL_ANALYZER_AVAILABLE = True
+    from agents.adapters import (
+        DeadCodeAdapter,
+        ASTComplexityAdapter,
+        SecurityAdapter,
+        CallGraphAdapter,
+        FunctionMetricsAdapter,
+        ExcelReportAdapter,
+    )
+    ADAPTERS_AVAILABLE = True
 except ImportError as e:
-    INCREMENTAL_ANALYZER_AVAILABLE = False
-    console.print(f"[yellow]Warning: IncrementalCodebaseAnalyzer not available: {e}[/yellow]")
+    ADAPTERS_AVAILABLE = False
 
 # Vector document processor (if still in use for non-health docs)
 try:
@@ -236,7 +242,7 @@ Examples:
     parser.add_argument(
         "--use-llm",
         action="store_true",
-        help="Use CodebaseAnalysisAgent with LLM (detailed analysis for Health Report)",
+        help="Enable LLM enrichment in StaticAnalyzerAgent (detailed analysis for Health Report)",
     )
     parser.add_argument(
         "--llm-exclusive",
@@ -259,7 +265,17 @@ Examples:
         "--use-incremental",
         action="store_true",
         default=True,
-        help="Use IncrementalCodebaseAnalyzer (default: enabled)",
+        help="Use batch-based incremental analysis (default: enabled, handled by StaticAnalyzerAgent)",
+    )
+
+    # Deep static analysis adapters
+    parser.add_argument(
+        "--enable-adapters",
+        action="store_true",
+        default=False,
+        help="Run deep static analysis adapters (Lizard, Flawfinder, CCLS) and "
+             "generate detailed_code_review.xlsx with static_ tabs. "
+             "Works with both standard and --llm-exclusive modes.",
     )
 
     # Incremental config
@@ -383,9 +399,16 @@ def codebase_analysis_agent(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Analyze the C/C++ codebase and write a canonical healthreport.json.
 
-    - Prefer CodebaseAnalysisAgent (LLM) when requested and available.
-    - Otherwise, use IncrementalCodebaseAnalyzer.
-    - Stores the full report and key sections in state.
+    Uses StaticAnalyzerAgent (unified 7-phase pipeline):
+      1. File discovery & caching
+      2. Batch analysis (all 9 analyzers)
+      3. Dependency graph construction
+      4. Health metrics calculation
+      5. LLM enrichment (optional, via --use-llm)
+      6. Report generation (JSON + Excel + Email)
+      7. Visualization (Mermaid diagrams)
+
+    Stores the full report and key sections in state.
     """
     log_memory_usage("codebase_analysis_agent start")
 
@@ -442,28 +465,42 @@ def codebase_analysis_agent(state: Dict[str, Any]) -> Dict[str, Any]:
         return state
 
     try:
-        # Choose analysis method
-        if opts.get("use_llm", False) and LLM_AGENT_AVAILABLE:
-            console.print("[blue]🔧 Using CodebaseAnalysisAgent with LLM[/blue]")
-            agent = CodebaseAnalysisAgent(
-                codebase_path=codebase_path,
-                output_dir=default_report_dir,
-                max_files=opts.get("max_files", 10000),
-                exclude_dirs=opts.get("exclude_dirs", []),
-                exclude_globs=opts.get("exclude_globs", []),
-                enable_llm=opts.get("enable_llm", True),
-                env_config=env_config,
-            )
-            results = agent.analyze()
-        else:
-            if not INCREMENTAL_ANALYZER_AVAILABLE:
-                raise RuntimeError("IncrementalCodebaseAnalyzer not available")
-            console.print("[blue]🔧 Using IncrementalCodebaseAnalyzer[/blue]")
-            analyzer = IncrementalCodebaseAnalyzer(codebase_path, opts)
-            results = analyzer.run_incremental_analysis()
-            if results.get("status") == "cancelled":
-                state["codebase_analysis_status"] = "cancelled: user interrupted"
-                return state
+        # Unified StaticAnalyzerAgent
+        if not STATIC_ANALYZER_AVAILABLE:
+            raise RuntimeError("StaticAnalyzerAgent not available — check agents/static_analyzer_agent.py")
+
+        use_llm = opts.get("use_llm", False)
+        console.print(f"[blue]🔧 Using StaticAnalyzerAgent (LLM={'enabled' if use_llm else 'disabled'})[/blue]")
+
+        # Initialize LLMTools if LLM enrichment requested
+        llm_tools = None
+        if use_llm and LLM_TOOLS_AVAILABLE and global_config:
+            try:
+                llm_tools = LLMTools(config=global_config)
+                console.print(f"[blue]  LLM provider: {llm_tools.provider}::{llm_tools.model}[/blue]")
+            except Exception as llm_err:
+                console.print(f"[yellow]Warning: LLMTools init failed: {llm_err} — running without LLM[/yellow]")
+                use_llm = False
+
+        agent = StaticAnalyzerAgent(
+            codebase_path=codebase_path,
+            output_dir=default_report_dir,
+            config=global_config,
+            llm_tools=llm_tools,
+            max_files=opts.get("max_files", 10000),
+            exclude_dirs=opts.get("exclude_dirs", []),
+            exclude_globs=opts.get("exclude_globs", []),
+            batch_size=opts.get("batch_size", 25),
+            memory_limit_mb=opts.get("memory_limit", 3000),
+            enable_llm=use_llm,
+            enable_adapters=opts.get("enable_adapters", False),
+            verbose=opts.get("verbose", False),
+        )
+        results = agent.run_analysis()
+
+        if results.get("status") == "cancelled":
+            state["codebase_analysis_status"] = "cancelled: user interrupted"
+            return state
 
         # Persist canonical healthreport.json
         with open(report_path, "w", encoding="utf-8") as f:
@@ -800,11 +837,18 @@ def run_workflow(user_input: str, env_config: EnvConfig, global_config: Optional
         "MAX_EDGES": opts.get("max_edges", 500),
     }
 
-    analysis_mode = (
-        "Comprehensive (CodebaseAnalysisAgent + LLM)"
-        if opts.get("use_llm", False)
-        else "Incremental"
-    )
+    adapters_active = opts.get("enable_adapters", False) and ADAPTERS_AVAILABLE
+
+    analysis_mode = "StaticAnalyzerAgent"
+    mode_parts = []
+    if opts.get("use_llm", False):
+        mode_parts.append("LLM enrichment")
+    if adapters_active:
+        mode_parts.append("deep static adapters")
+    if mode_parts:
+        analysis_mode += " + " + " + ".join(mode_parts)
+    else:
+        analysis_mode += " (static analysis only)"
 
     console.print("\n[bold blue]🚀 Starting C/C++ Codebase Analysis Workflow[/bold blue]")
     console.print(f"[blue]📁 Codebase: {codebase_path}[/blue]")
@@ -815,13 +859,14 @@ def run_workflow(user_input: str, env_config: EnvConfig, global_config: Optional
         f"{'enabled' if opts.get('enable_vector_db', False) else 'disabled'}[/blue]"
     )
     console.print(
-        f"[blue]🤖 CodebaseAnalysisAgent: "
-        f"{'available' if LLM_AGENT_AVAILABLE else 'unavailable'}[/blue]"
+        f"[blue]🤖 StaticAnalyzerAgent: "
+        f"{'available' if STATIC_ANALYZER_AVAILABLE else 'unavailable'}[/blue]"
     )
-    console.print(
-        f"[blue]🔧 IncrementalAnalyzer: "
-        f"{'available' if INCREMENTAL_ANALYZER_AVAILABLE else 'unavailable'}[/blue]"
-    )
+    if adapters_active:
+        console.print(
+            "[blue]🔬 Deep Adapters: enabled "
+            "(Lizard, Flawfinder, CCLS)[/blue]"
+        )
 
     graph = build_workflow_graph()
     workflow = graph.compile()
@@ -888,6 +933,98 @@ def run_workflow(user_input: str, env_config: EnvConfig, global_config: Optional
 
     force_garbage_collection()
     return final_state
+
+
+# --------- Standalone Adapter Runner ---------
+def _run_standalone_adapters(
+    codebase_path: str,
+    output_dir: str,
+    exclude_dirs: Optional[List[str]] = None,
+    generate_excel: bool = False,
+) -> Dict[str, Any]:
+    """
+    Run deep static analysis adapters independently.
+
+    Builds a minimal file_cache by scanning the codebase and runs all adapters.
+    When called from --llm-exclusive mode, returns results for CodebaseLLMAgent
+    to embed static_ tabs into its own Excel. When generate_excel=True, writes
+    a standalone detailed_code_review.xlsx via ExcelReportAdapter.
+
+    :param codebase_path: Root path of the C/C++ codebase.
+    :param output_dir: Directory for output artifacts.
+    :param exclude_dirs: Directories to exclude from scanning.
+    :param generate_excel: If True, generate a standalone Excel report.
+    :return: Dict mapping adapter names to their result dicts.
+    """
+    from agents.core.file_processor import FileProcessor
+
+    # Build file cache from codebase
+    processor = FileProcessor(
+        codebase_path=codebase_path,
+        exclude_dirs=exclude_dirs or [],
+    )
+    file_cache = processor.process_files()
+    console.print(f"[blue]  📁 File cache: {len(file_cache)} files[/blue]")
+
+    # Try to initialize CCLS
+    ccls_navigator = None
+    try:
+        from dependency_builder.ccls_code_navigator import CCLSCodeNavigator
+        from dependency_builder.config import DependencyBuilderConfig
+
+        config = DependencyBuilderConfig.from_env()
+        cache_path = os.path.join(output_dir, ".ccls_cache")
+        os.makedirs(cache_path, exist_ok=True)
+        ccls_navigator = CCLSCodeNavigator(
+            project_root=codebase_path,
+            cache_path=cache_path,
+            logger=logger,
+            config=config,
+        )
+    except Exception as exc:
+        console.print(f"[yellow]  CCLS not available: {exc}[/yellow]")
+
+    # Run all adapters
+    adapter_results: Dict[str, Any] = {}
+    adapters = [
+        ("ast_complexity", ASTComplexityAdapter()),
+        ("security", SecurityAdapter()),
+        ("dead_code", DeadCodeAdapter()),
+        ("call_graph", CallGraphAdapter()),
+        ("function_metrics", FunctionMetricsAdapter()),
+    ]
+
+    for name, adapter in adapters:
+        try:
+            result = adapter.analyze(
+                file_cache, ccls_navigator=ccls_navigator, dependency_graph={}
+            )
+            adapter_results[name] = result
+            avail = result.get("tool_available", False)
+            score = result.get("score", 0)
+            grade = result.get("grade", "F")
+            if avail:
+                console.print(f"[green]  ✅ {name}: {score:.0f}/100 ({grade})[/green]")
+            else:
+                console.print(f"[yellow]  ⏭️  {name}: tool not available[/yellow]")
+        except Exception as exc:
+            console.print(f"[yellow]  ⏭️  {name}: failed ({exc})[/yellow]")
+
+    # Optionally generate a standalone Excel report with static_ tabs
+    if generate_excel:
+        excel_adapter = ExcelReportAdapter(output_dir=output_dir)
+        excel_adapter.analyze(file_cache=[], adapter_results=adapter_results)
+        report_path = os.path.join(output_dir, "detailed_code_review.xlsx")
+        console.print(f"[green]  📊 Static analysis tabs written to: {report_path}[/green]")
+
+    # Cleanup CCLS
+    if ccls_navigator is not None:
+        try:
+            ccls_navigator.killCCLSProcess()
+        except Exception:
+            pass
+
+    return adapter_results
 
 
 # --------- Main Entrypoint ---------
@@ -983,11 +1120,32 @@ def main():
                 # Determine output filename
                 output_filename = "detailed_code_review.xlsx"
 
-                # Run Analysis
-                report_path = agent.run_analysis(output_filename=output_filename, email_recipients=None)
+                # Optionally run deep static adapters FIRST, so results
+                # are passed into CodebaseLLMAgent for a single Excel file
+                adapter_results = None
+                if opts.get("enable_adapters", False) and ADAPTERS_AVAILABLE:
+                    console.print("[blue]🔬 Running deep static analysis adapters...[/blue]")
+                    try:
+                        adapter_results = _run_standalone_adapters(
+                            codebase_path=opts["codebase_path"],
+                            output_dir=opts["out_dir"],
+                            exclude_dirs=opts.get("exclude_dirs", []),
+                        )
+                        console.print("[green]✅ Adapter analysis complete — results will be merged into Excel.[/green]")
+                    except Exception as adapter_err:
+                        console.print(f"[yellow]Warning: Adapter analysis failed: {adapter_err}[/yellow]")
+                        adapter_results = None
 
-                console.print(f"[green]✅ Analysis Complete![/green]")
+                # Run LLM Analysis (passes adapter_results for single-file output)
+                report_path = agent.run_analysis(
+                    output_filename=output_filename,
+                    email_recipients=None,
+                    adapter_results=adapter_results,
+                )
+
+                console.print(f"[green]✅ LLM Analysis Complete![/green]")
                 console.print(f"[green]📊 Detailed Report Saved: {report_path}[/green]")
+
                 sys.exit(0)
 
             except Exception as e:
