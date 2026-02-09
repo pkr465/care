@@ -19,7 +19,6 @@ class SecurityAnalyzer:
     - Cryptographic weaknesses and TLS misconfiguration
     - Insecure PRNG and input conversion
     - Insecure file permissions and temp files
-    - Qualcomm-specific non-standard "safe" APIs and misuse of safe APIs
     """
 
     # C/C++ file extensions
@@ -51,7 +50,6 @@ class SecurityAnalyzer:
 
         Overview:
         - Scans C/C++ files for banned/unsafe APIs and high-impact risky constructs.
-        - Flags Qualcomm-specific "homegrown" reimplementations and misuse of safe APIs.
         - Produces severity-weighted scoring and detailed per-file violations.
 
         Limitations:

@@ -5,20 +5,22 @@ import time
 import math
 import statistics
 import logging
-import traceback
 import xxhash
 from pathlib import Path
 from collections import defaultdict
 from functools import lru_cache
 from typing import List, Dict, Optional, Tuple, Any, Set, Union
-from urllib.parse import unquote, urlparse
+from copy import copy
 
 # External libraries
 from pylspclient import LspClient, JsonRpcEndpoint, LspEndpoint
 from pylspclient.lsp_pydantic_strcuts import TextDocumentItem, Position
-from clang.cindex import Index, Config
+from clang.cindex import Index, Config as ClangConfig
 
 # Internal imports
+from dependency_builder.utils import clean_uri, to_uri
+from dependency_builder.config import DependencyBuilderConfig, DEFAULT_CONFIG
+from dependency_builder.metrics import get_metrics
 from dependency_builder.lsp_notification_handlers import (
     semantic_highlight_handler,
     skipped_ranges_handler,
@@ -42,26 +44,31 @@ class CCLSCodeNavigator:
     Provides functionality for definition lookup, call hierarchy, and tokenization.
     """
 
-    def __init__(self, project_root: str, cache_path: str, logger: logging.Logger, options: List[str] = None):
+    def __init__(self, project_root: str, cache_path: str, logger: logging.Logger,
+                 options: List[str] = None, config: DependencyBuilderConfig = None):
         self.project_root = os.path.abspath(project_root)
         self.cache_path = os.path.abspath(cache_path)
         self.ccls_options = options if options else []
         self.logger = logger
-        
+        self.config = config or DEFAULT_CONFIG
+        self._metrics = get_metrics()
+
         self.opened_docs: Set[str] = set()
         self.index: Optional[Index] = None
-        
+
         # 1. Initialize LibClang (required for tokenization)
         self._init_libclang()
 
         # 2. Start CCLS Process
         self.ccls_process = self._start_ccls_process()
         if not self.ccls_process:
-            raise RuntimeError("Failed to start ccls process.")
+            from dependency_builder.exceptions import CCLSStartupError
+            raise CCLSStartupError("ccls subprocess returned None")
+        self._metrics.record_process_start()
 
         # 3. Setup JSON-RPC
         self.json_rpc_endpoint = JsonRpcEndpoint(self.ccls_process.stdin, self.ccls_process.stdout)
-        
+
         self.notify_callbacks = {
             "window/workDoneProgress/create": work_done_progress_create_handler(logger),
             "$/progress": progress_handler(logger),
@@ -70,9 +77,9 @@ class CCLSCodeNavigator:
         }
 
         self.lsp_endpoint = LspEndpoint(
-            self.json_rpc_endpoint, 
-            notify_callbacks=self.notify_callbacks, 
-            timeout=30
+            self.json_rpc_endpoint,
+            notify_callbacks=self.notify_callbacks,
+            timeout=self.config.lsp_endpoint_timeout
         )
         self.lsp_client = LspClient(self.lsp_endpoint)
 
@@ -81,7 +88,7 @@ class CCLSCodeNavigator:
         self.lsp_client.initialized()
 
     def _init_libclang(self):
-        """Attempts to load libclang from common system paths."""
+        """Attempts to load libclang from configured search paths."""
         try:
             # Try creating index directly
             try:
@@ -90,47 +97,49 @@ class CCLSCodeNavigator:
             except Exception:
                 pass
 
-            # Search common paths
-            possible_paths = [
-                "/usr/lib/llvm-14/lib/libclang.so",
-                "/usr/lib/llvm-15/lib/libclang.so",
-                "/usr/lib/x86_64-linux-gnu/libclang.so",
-                "/usr/local/lib/libclang.so",
-                "/Library/Developer/CommandLineTools/usr/lib/libclang.dylib" # macOS
-            ]
-            
+            # Search configured paths (includes LIBCLANG_PATH env if set via config.from_env())
+            possible_paths = list(self.config.libclang_search_paths)
+
+            # Also check env directly for backward compatibility
             if os.environ.get("LIBCLANG_PATH"):
                 possible_paths.insert(0, os.environ["LIBCLANG_PATH"])
 
             lib_loaded = False
             for path in possible_paths:
                 if os.path.exists(path):
-                    Config.set_library_file(path)
+                    ClangConfig.set_library_file(path)
                     self.logger.info(f"libclang path set to: {path}")
                     self.index = Index.create()
                     lib_loaded = True
                     break
-            
+
             if not lib_loaded:
-                self.logger.warning("Could not find libclang.so. Tokenization features may fail.")
+                self.logger.warning(
+                    "Could not find libclang.so. Tokenization features may fail. "
+                    f"Searched: {possible_paths}"
+                )
         except Exception as e:
             self.logger.error(f"Error initializing libclang: {e}")
 
     def _start_ccls_process(self) -> Optional[subprocess.Popen]:
-        """Starts the ccls subprocess."""
+        """Starts the ccls subprocess using configured executable and options."""
         try:
             self.logger.info("Starting ccls subprocess...")
-            cmd = ["ccls", "--log-file=ccls.log", "-v=1"] + self.ccls_options
-            
+            cmd = [
+                self.config.ccls_executable,
+                f"--log-file={self.config.ccls_log_file}",
+                f"-v={self.config.ccls_verbosity}",
+            ] + self.ccls_options
+
             # preexec_fn=os.setsid allows us to kill the whole process group later
             process = subprocess.Popen(
-                cmd, 
-                stdin=subprocess.PIPE, 
-                stdout=subprocess.PIPE, 
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 preexec_fn=os.setsid
             )
-            time.sleep(0.5)
+            time.sleep(self.config.ccls_process_startup_delay)
             return process
         except Exception as e:
             self.logger.exception(f"Failed to start ccls: {e}")
@@ -150,7 +159,7 @@ class CCLSCodeNavigator:
             }
             init_opts = {
                 "cache": {"directory": self.cache_path},
-                "index": {"threads": os.cpu_count() or 2},
+                "index": {"threads": self.config.effective_index_threads},
                 "client": {"snippetSupport": False}
             }
             
@@ -172,27 +181,14 @@ class CCLSCodeNavigator:
     # --- Utility Methods ---
 
     def _clean_uri(self, uri: str) -> str:
-        """Converts LSP URI to local file path (Absolute)."""
-        if not uri: 
-            return ""
-        try:
-            parsed = urlparse(uri)
-            if parsed.scheme == "file":
-                path = unquote(parsed.path) 
-            elif parsed.scheme == "":
-                path = unquote(uri)
-            else:
-                path = unquote(parsed.path)
-            return os.path.abspath(path)
-        except Exception:
-            # Fallback for simple cases
-            return uri.replace("file://", "").replace("%2B", "+")
+        """Converts LSP URI to local file path (Absolute). Delegates to shared utils."""
+        return clean_uri(uri)
 
     def _to_uri(self, path: str) -> str:
-        """Converts local file path to LSP URI."""
-        return f"file://{Path(path).resolve()}"
+        """Converts local file path to LSP URI. Delegates to shared utils."""
+        return to_uri(path)
 
-    @lru_cache(maxsize=256)
+    @lru_cache(maxsize=DEFAULT_CONFIG.file_cache_maxsize)
     def read_file(self, path: str) -> str:
         """Reads file content with caching."""
         if Path(path).exists():
@@ -204,6 +200,11 @@ class CCLSCodeNavigator:
         else:
             self.logger.error(f"File not found: {path}")
             return ""
+
+    def clear_file_cache(self) -> None:
+        """Clear the read_file LRU cache to prevent memory leaks in long-running sessions."""
+        self.read_file.cache_clear()
+        self.logger.debug("File read cache cleared")
 
     def create_doc(self, path: str) -> Optional[TextDocumentItem]:
         """
@@ -316,9 +317,11 @@ class CCLSCodeNavigator:
             
             # Fallback: Try role 1 (Declaration) if Definition empty
             if not result_dict:
-                pos.character += 1 # shift slightly to catch edge cases
+                # Use a copy to avoid mutating the caller's Position object
+                shifted_pos = copy(pos)
+                shifted_pos.character += 1
                 result_dict = self.lsp_client.lsp_endpoint.call_method(
-                    "$ccls/navigate", textDocument=doc, position=pos, role=1
+                    "$ccls/navigate", textDocument=doc, position=shifted_pos, role=1
                 )
 
             if not result_dict:
@@ -388,8 +391,10 @@ class CCLSCodeNavigator:
             return tokens
 
         try:
-            # Parse the snippet as a virtual file
-            tu = self.index.parse('snippet.c', unsaved_files=[('snippet.c', source_code)])
+            # Parse the snippet as a virtual C++ file
+            # Use .cpp extension to ensure C++ parsing mode
+            virt_name = self.config.virtual_snippet_filename
+            tu = self.index.parse(virt_name, unsaved_files=[(virt_name, source_code)])
             
             for token in tu.get_tokens(extent=tu.cursor.extent):
                 if token.kind.name in {"PUNCTUATION", "COMMENT", "KEYWORD", "LITERAL"}:
@@ -534,11 +539,13 @@ class CCLSCodeNavigator:
             self.logger.error(f"Error creating call flow: {e}")
             return None
 
-    def get_references_recursive(self, doc: TextDocumentItem, pos: Position, visited: Set = None, depth: int = 0, max_depth: int = 10) -> List[Dict]:
+    def get_references_recursive(self, doc: TextDocumentItem, pos: Position, visited: Set = None, depth: int = 0, max_depth: int = None) -> List[Dict]:
         """Recursive find references."""
         if visited is None:
             visited = set()
-        
+        if max_depth is None:
+            max_depth = self.config.max_reference_depth
+
         if depth > max_depth:
             return []
 
@@ -578,21 +585,54 @@ class CCLSCodeNavigator:
         return results
 
     def killCCLSProcess(self):
-        """Cleanly shuts down the LSP client and kills the process."""
+        """Cleanly shuts down the LSP client and kills the ccls process."""
+        # 1. Attempt graceful LSP shutdown
         try:
             self.logger.info("Shutting down CCLS...")
             self.lsp_client.shutdown()
             self.lsp_client.exit()
         except Exception:
             pass
-        
+
+        # 2. Clean up the subprocess
         try:
-            if self.ccls_process:
-                os.killpg(os.getpgid(self.ccls_process.pid), signal.SIGTERM)
-                self.ccls_process.wait(timeout=2)
+            if self.ccls_process and self.ccls_process.poll() is None:
+                # Process is still running - try SIGTERM first
+                try:
+                    pgid = os.getpgid(self.ccls_process.pid)
+                    os.killpg(pgid, signal.SIGTERM)
+                    self.ccls_process.wait(timeout=self.config.sigterm_timeout)
+                except subprocess.TimeoutExpired:
+                    # SIGTERM didn't work, escalate to SIGKILL
+                    self.logger.warning("CCLS did not respond to SIGTERM, sending SIGKILL")
+                    try:
+                        pgid = os.getpgid(self.ccls_process.pid)
+                        os.killpg(pgid, signal.SIGKILL)
+                        self.ccls_process.wait(timeout=self.config.sigkill_timeout)
+                    except Exception:
+                        pass
+                except ProcessLookupError:
+                    # Process already exited
+                    pass
         except Exception as e:
-            self.logger.error(f"Error killing process: {e}")
+            self.logger.error(f"Error during process cleanup: {e}")
+
+        # 3. Record metrics
+        try:
+            self._metrics.record_process_kill()
+        except Exception:
+            pass
+
+        # 4. Clear the file read cache to free memory
+        try:
+            self.clear_file_cache()
+        except Exception:
+            pass
 
     def __del__(self):
         """Destructor to ensure process cleanup."""
-        self.killCCLSProcess()
+        try:
+            self.killCCLSProcess()
+        except Exception:
+            # Suppress errors during GC - resources may already be cleaned up
+            pass

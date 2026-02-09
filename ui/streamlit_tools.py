@@ -217,7 +217,7 @@ def sidebar(img_path: str) -> str:
                 <p style='text-align: center; font-size: 15px; color: #F3F6FB;'>
                     <b>Codebase Analysis Dashboard</b><br>
                     Executive analytics for your codebase metrics and health.<br>
-                    <b>Contact:</b> rearc@qualcomm.com
+                    <b>Contact:</b> sendpavanr@gmail.com
                 </p>
                 <hr>
                 <div style='font-size:13px; color: #FFD700; text-align:center;'>

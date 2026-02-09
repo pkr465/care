@@ -3,127 +3,134 @@ import os
 import xxhash
 from collections import deque
 from typing import Optional, Dict, Any, List, Union, Set
-from urllib.parse import unquote, urlparse
 
 # External imports
 from pylspclient.lsp_pydantic_strcuts import TextDocumentItem, Position
 
 # Internal imports
 from dependency_builder.ccls_code_navigator import CCLSCodeNavigator
+from dependency_builder.utils import clean_uri, resolve_file_path
+from dependency_builder.config import DependencyBuilderConfig, DEFAULT_CONFIG
+from dependency_builder.metrics import get_metrics
+
 
 class CCLSDependencyBuilder:
     """
     Orchestrates the retrieval of code dependencies (functions, variables, types)
     using the CCLSCodeNavigator. Builds call graphs and token-level dependency trees.
     """
-    
-    def __init__(self, project_root: str, cache_path: str, logger: logging.Logger):
+
+    def __init__(self, project_root: str, cache_path: str, logger: logging.Logger,
+                 config: DependencyBuilderConfig = None):
         self.project_root = os.path.abspath(project_root)
         self.cache_path = os.path.abspath(cache_path)
         self.logger = logger
+        self.config = config or DEFAULT_CONFIG
+        self._metrics = get_metrics()
 
     def _resolve_file_path(self, input_path: str) -> str:
-        """
-        Attempts to find the correct absolute path for a given input.
-        Checks relative to project_root first.
-        """
-        if not input_path:
-            return ""
-
-        # 1. Try joining with project_root (Handle relative paths like './prplMesh/...')
-        # We strip './' or leading slashes to ensure os.path.join works correctly
-        cleaned_input = input_path.lstrip("." + os.sep)
-        root_relative = os.path.abspath(os.path.join(self.project_root, cleaned_input))
-        
-        if os.path.exists(root_relative):
-            return root_relative
-
-        # 2. Try as a pure absolute path
-        abs_input = os.path.abspath(input_path)
-        if os.path.exists(abs_input):
-            return abs_input
-
-        # 3. Fallback: Return the root-relative version anyway
-        return root_relative
+        """Delegates to shared utility for file path resolution."""
+        return resolve_file_path(input_path, self.project_root)
 
     def _clean_uri(self, uri: str) -> str:
-        """Converts LSP URI to Absolute file system path."""
-        if not uri:
-            return ""
-        try:
-            parsed = urlparse(uri)
-            if parsed.scheme == "file":
-                path = unquote(parsed.path) 
-            else:
-                path = unquote(uri)
-            return os.path.abspath(path)
-        except Exception:
-            return uri
+        """Delegates to shared utility for URI cleaning."""
+        return clean_uri(uri)
 
-    def _get_dependency_bfs(self, nav: CCLSCodeNavigator, call_flow: Dict[str, Any], max_level: int = 1, is_parent: bool = False) -> Optional[Dict[str, Any]]:
-        dependencies = {}
-        q = deque()
+    # Class-level constants as fallback (prefer config values)
+    MAX_BFS_DEPTH = DEFAULT_CONFIG.max_bfs_depth
+    MAX_NODES_PER_LEVEL = DEFAULT_CONFIG.max_nodes_per_level
+
+    def _get_dependency_bfs(self, nav: CCLSCodeNavigator, call_flow: Dict[str, Any], max_level: int = 1, is_parent: bool = False) -> Dict[str, Any]:
+        """
+        BFS traversal of the call graph. Collects dependencies at each level.
+        Includes depth guards and node limits to prevent runaway traversal.
+        """
+        dependencies: Dict[int, Dict[str, Any]] = {}
+        q: deque = deque()
         level = 0
-        q.append(call_flow) 
+        q.append(call_flow)
         seen: Set[str] = set()
-        
+
+        # Enforce absolute max depth even if caller requests more
+        effective_max = min(max_level, self.config.max_bfs_depth)
+
         while q:
             current_level_size = len(q)
-            if level > max_level:
+            if level > effective_max:
                 break
 
+            nodes_this_level = 0
             for _ in range(current_level_size):
                 csym = q.popleft()
                 if not csym or not csym.get("name") or csym["name"] in seen:
                     continue
-                
+
+                # Guard against too many nodes at one level
+                if nodes_this_level >= self.config.max_nodes_per_level:
+                    self.logger.warning(f"BFS node limit reached at level {level}")
+                    break
+
                 cdoc, cpos = nav.getDocandPosFromSymbol(csym)
                 if not cdoc or not cpos:
                     continue
-                
-                if not nav.openDoc(cdoc):
-                    continue
-                
+
+                nav.openDoc(cdoc)
+
                 try:
                     locs = nav.lsp_client.lsp_endpoint.call_method(
                         "textDocument/definition", textDocument=cdoc, position=cpos
                     )
                 except Exception:
                     continue
-                
-                if not locs:
+
+                # Safety: check locs is a non-empty list before indexing
+                if not locs or not isinstance(locs, list) or len(locs) == 0:
                     continue
-                
+
                 loc = locs[0]
-                def_path = self._clean_uri(loc['uri'])
+                if not isinstance(loc, dict) or "uri" not in loc or "range" not in loc:
+                    continue
+
+                def_path = self._clean_uri(loc["uri"])
                 ddoc = nav.create_doc(def_path)
-                
+
                 if not ddoc:
-                    continue 
-                
-                dpos = Position(line=loc['range']['start']['line'], character=loc['range']['start']['character'])
+                    continue
+
+                start_info = loc["range"].get("start", {})
+                dpos = Position(
+                    line=start_info.get("line", 0),
+                    character=start_info.get("character", 0),
+                )
                 cdef = nav.getDefinition(ddoc, dpos)
-                
+
                 if level not in dependencies:
                     dependencies[level] = {}
-                    
-                cid = csym.get("id", xxhash.xxh64(f"{cdoc.uri}:{csym['name']}:{cpos.line}").hexdigest())
-                
+
+                # Include character position in hash to avoid collisions on overloaded symbols
+                cid = csym.get(
+                    "id",
+                    xxhash.xxh64(
+                        f"{cdoc.uri}:{csym['name']}:{cpos.line}:{cpos.character}"
+                    ).hexdigest(),
+                )
+
                 dependencies[level][cid] = {
                     "name": csym["name"],
                     "definition": cdef,
                     "file": def_path,
                     "uri": ddoc.uri,
-                    "start": loc['range']['start'],
-                    "kind": "FUNCTION_DECL"
+                    "start": start_info,
+                    "kind": "FUNCTION_DECL",
                 }
-                
+
                 for child in csym.get("children", []):
                     q.append(child)
                 seen.add(csym["name"])
-            
+                nodes_this_level += 1
+
             level += 1
-            
+
         return dependencies
 
     def _fetch_dependencies_for_symbol(self, nav: CCLSCodeNavigator, doc: TextDocumentItem, pos: Position, level: int) -> Optional[Dict[str, Any]]:

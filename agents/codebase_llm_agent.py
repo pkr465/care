@@ -114,7 +114,7 @@ class CodebaseLLMAgent:
     def run_analysis(
         self, 
         output_filename: str = "detailed_code_review.xlsx", 
-        email_recipient: str = "pavanr@qti.qualcomm.com"
+        email_recipient: str = "sendpavanr@gmail.com"
     ) -> str:
         """
         Main Execution Pipeline:

@@ -57,7 +57,7 @@ if not isinstance(STREAMLIT_MODEL, str) or not STREAMLIT_MODEL.strip():
     st.error("Model configuration invalid or missing.")
     st.stop()
 
-img_path = os.path.join(os.path.dirname(__file__), "qualcomm_logo.png")
+img_path = os.path.join(os.path.dirname(__file__), "logo.png")
 if not os.path.isfile(img_path):
     st.warning("Logo image not found at expected path.")
 
@@ -90,7 +90,7 @@ orchestrator = get_orchestrator()
 
 
 def show_about():
-    st.info("Qualcomm Codebase Metrics & Health Analysis powered by Genie.")
+    st.info("Codebase Metrics & Health Analysis powered by Genie.")
     st.stop()
 
 

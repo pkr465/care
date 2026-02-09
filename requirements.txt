@@ -17,12 +17,9 @@ rich
 langgraph 
 langchain-core
 langchain>=0.0.350
-qgenie-sdk[all]
 langchain-postgres
 networkx
 xlsxwriter
 matplotlib
 pylspclient
 clang
---extra-index-url https://devpi.qualcomm.com/qcom/dev/+simple
---trusted-host devpi.qualcomm.com

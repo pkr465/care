@@ -149,11 +149,6 @@ pip install psutil
 pip install rich
 pip install numpy psycopg2-binary
 pip install sqlalchemy langgraph langchain-core
-
-# Qualcomm Internal QGenie SDK
-pip install qgenie-sdk -i https://devpi.qualcomm.com/qcom/dev/+simple --trusted-host devpi.qualcomm.com
-pip install "qgenie-sdk[integrations]" -i https://devpi.qualcomm.com/qcom/dev/+simple --trusted-host devpi.qualcomm.com
-
 pip install langchain==0.0.350
 pip install langchain-postgres
 pip install networkx

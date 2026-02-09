@@ -304,7 +304,7 @@ if __name__ == "__main__":
     
     # Test sending (pass "" if no attachment for test)
     reporter.send_report(
-        recipients="pavanr@qti.qualcomm.com", 
+        recipients="sendpavanr@gmail.com", 
         attachment_path="", 
         metadata=dummy_meta, 
         stats=dummy_stats, 

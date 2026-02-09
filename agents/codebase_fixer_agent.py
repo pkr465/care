@@ -120,7 +120,7 @@ class CodebaseFixerAgent:
             print(f"[!] Error initializing LLMTools: {e}")
             return LLMTools() 
 
-    def run_agent(self, report_filename: str = "final_execution_audit.xlsx", email_recipient: str = "pavanr@qti.qualcomm.com"):
+    def run_agent(self, report_filename: str = "final_execution_audit.xlsx", email_recipient: str = "sendpavanr@gmail.com"):
         print(f"[*] Starting Holistic Fixer Agent on {self.codebase_root}")
         if self.dep_service:
             print(f"[*] Dependency Service Enabled. Using cache at: {self.output_dir}/{self.project_name}")
