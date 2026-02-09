@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240">
+  <defs>
+    <linearGradient id="bgG" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0D1B2A;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1B2838;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="cG" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00BCD4;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0097A7;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="aG" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#00BCD4;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#26C6DA;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect x="0" y="0" width="240" height="240" rx="24" ry="24" fill="url(#bgG)" />
+
+  <!-- Code brackets (large, centered) -->
+  <g transform="translate(120, 80)" text-anchor="middle">
+    <!-- Left bracket -->
+    <path d="M-40,-45 L-65,0 L-40,45" stroke="url(#cG)" stroke-width="8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Right bracket -->
+    <path d="M40,-45 L65,0 L40,45" stroke="url(#cG)" stroke-width="8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Checkmark -->
+    <path d="M-18,5 L-4,22 L24,-15" stroke="#4CAF50" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- CARE text -->
+  <text x="120" y="172" text-anchor="middle" font-family="SF Pro Display, Helvetica Neue, Arial, sans-serif" font-size="44" font-weight="800" letter-spacing="8" fill="#E0E0E0">
+    CARE
+  </text>
+
+  <!-- Accent line -->
+  <rect x="40" y="182" width="160" height="2" rx="1" fill="url(#aG)" opacity="0.5"/>
+
+  <!-- Subtitle -->
+  <text x="120" y="205" text-anchor="middle" font-family="SF Pro Text, Helvetica Neue, Arial, sans-serif" font-size="9.5" font-weight="500" letter-spacing="2.5" fill="#80DEEA">
+    CODEBASE ANALYSIS
+  </text>
+  <text x="120" y="220" text-anchor="middle" font-family="SF Pro Text, Helvetica Neue, Arial, sans-serif" font-size="9.5" font-weight="500" letter-spacing="2.5" fill="#80DEEA">
+    &amp; REFACTOR ENGINE
+  </text>
+</svg>

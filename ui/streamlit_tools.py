@@ -1,131 +1,156 @@
 """
 streamlit_tools.py
 
-Shared UI helpers for the Codebase Metrics / Analysis app.
+CARE — Codebase Analysis & Refactor Engine
+Shared UI helpers: sidebar, CSS, feedback widgets, chat utilities.
 
 Author: Pavan R
 """
 
+import os
 import socket
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 import streamlit as st
 
+# ── Brand constants ──────────────────────────────────────────────────────────
+CARE_CYAN = "#00BCD4"
+CARE_DARK_BG = "#0D1B2A"
+CARE_CARD_BG = "#1B2838"
+CARE_TEXT = "#E0E0E0"
+CARE_ACCENT = "#80DEEA"
+CARE_GREEN = "#4CAF50"
+CARE_GOLD = "#FFD700"
 
-# -------- App-wide CSS ---------
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Global CSS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def app_css() -> None:
-    """
-    Injects global CSS styling for the app.
-    """
+    """Injects CARE-branded global CSS styling."""
     st.markdown(
-        """
+        f"""
         <style>
-        html, body, table, th, td {
-            font-family: "San Francisco", "SF Pro Display", "SF Pro Icons",
-                         "Helvetica Neue", Arial, sans-serif !important;
+        /* ── Base typography ─────────────────────────────────────── */
+        html, body, table, th, td {{
+            font-family: "SF Pro Display", "Helvetica Neue", Arial, sans-serif !important;
             font-feature-settings: "liga" on, "kern" on;
-        }
+        }}
 
-        /* Table styling */
-        table, th, td {
-            background-color: #000000 !important;
-            color: #F3F6FB !important;
+        /* ── Table styling ───────────────────────────────────────── */
+        table, th, td {{
+            background-color: {CARE_DARK_BG} !important;
+            color: {CARE_TEXT} !important;
             border-color: #2A2A2A !important;
-        }
-        thead th {
-            background-color: #141414 !important;
-            color: #FFD700 !important;
-        }
-        table, .stDataFrame table, .stChatMessage table {
-            border-radius: 18px !important;
+        }}
+        thead th {{
+            background-color: {CARE_CARD_BG} !important;
+            color: {CARE_CYAN} !important;
+            font-weight: 600 !important;
+        }}
+        table, .stDataFrame table, .stChatMessage table {{
+            border-radius: 12px !important;
             overflow: hidden !important;
             margin-bottom: 1em;
-        }
+        }}
 
-        /* Heading styling */
-        h1, h2, h3, h4, h5, h6 {
-            color: #80DEEA !important;
+        /* ── Headings ────────────────────────────────────────────── */
+        h1, h2, h3 {{
+            color: {CARE_ACCENT} !important;
             letter-spacing: 0.3px;
             font-weight: 700;
             border: none;
-        }
+        }}
+        h4, h5, h6 {{
+            color: {CARE_TEXT} !important;
+            font-weight: 600;
+        }}
 
-        hr {
+        hr {{
             border-top: 2px solid #2A2A2A !important;
             margin-top: 16px;
             margin-bottom: 16px;
-        }
+        }}
 
-        /* Feedback styling */
-        .feedback-row {
+        /* ── Sidebar branding ────────────────────────────────────── */
+        [data-testid="stSidebar"] {{
+            background: linear-gradient(180deg, {CARE_DARK_BG} 0%, {CARE_CARD_BG} 100%);
+        }}
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3 {{
+            color: {CARE_CYAN} !important;
+        }}
+
+        /* ── Feedback row ────────────────────────────────────────── */
+        .feedback-row {{
             display: flex;
             align-items: center;
             gap: 18px;
             margin-top: 8px;
             margin-bottom: 10px;
-        }
-        .feedback-label {
+        }}
+        .feedback-label {{
             font-weight: bold;
             font-size: 16px;
-        }
-        .feedback-btn {
+        }}
+        .feedback-btn {{
             font-size: 16px;
             padding: 6px 15px;
             border-radius: 5px;
             border: none;
             cursor: pointer;
-        }
-        .feedback-summary {
-            background-color: #f2f7ff;
+        }}
+        .feedback-summary {{
+            background-color: {CARE_CARD_BG};
             border-radius: 6px;
-            border: 1px solid #b6cfff;
+            border: 1px solid {CARE_CYAN};
             padding: 7px 12px;
-            color: #034694;
+            color: {CARE_ACCENT};
             font-size: 15px;
             margin-left: 10px;
             display: inline-block;
-        }
+        }}
+
+        /* ── Chat message tweaks ─────────────────────────────────── */
+        .stChatMessage {{
+            border-radius: 12px !important;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Response extraction
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def extract_answer(agent_response: Any) -> str:
     """
-    Extracts the assistant's answer from a response object.
+    Extracts the assistant's answer from various response shapes.
 
-    Supports:
-    - Plain string responses.
-    - Dicts with a 'content' field.
-    - Objects with a .content attribute.
-    - Lists of messages (dict or objects with role/content).
-
-    Returns a human-readable string, or a diagnostic message if extraction fails.
+    Supports plain strings, dicts with 'content', objects with .content,
+    and lists of role-tagged messages.
     """
     try:
-        # Most common case: LLM orchestration returns a string
         if isinstance(agent_response, str):
             return agent_response
 
-        # Dict with 'content' (LLM wrapper or tool output)
         if isinstance(agent_response, dict) and "content" in agent_response:
             return str(agent_response["content"])
 
-        # Object with 'content' attribute
         if hasattr(agent_response, "content"):
             return str(agent_response.content)
 
-        # Legacy: list of messages or outputs
         if isinstance(agent_response, list) and agent_response:
-            assistant_msgs = []
-            for msg in agent_response:
-                if isinstance(msg, dict) and msg.get("role") == "assistant":
-                    assistant_msgs.append(msg)
-                elif hasattr(msg, "role") and getattr(msg, "role") == "assistant":
-                    assistant_msgs.append(msg)
-
+            assistant_msgs = [
+                msg for msg in agent_response
+                if (isinstance(msg, dict) and msg.get("role") == "assistant")
+                or (hasattr(msg, "role") and getattr(msg, "role") == "assistant")
+            ]
             if assistant_msgs:
                 last = assistant_msgs[-1]
                 if isinstance(last, dict):
@@ -134,7 +159,6 @@ def extract_answer(agent_response: Any) -> str:
                     return str(last.content)
                 return str(last)
 
-            # Fallback: use last message in the list
             last = agent_response[-1]
             if isinstance(last, dict):
                 return str(last.get("content", last))
@@ -142,28 +166,24 @@ def extract_answer(agent_response: Any) -> str:
                 return str(last.content)
             return str(last)
 
-        # Explicit None
         if agent_response is None:
             return "No response."
 
-        # Fallback for unexpected types
         return f"Unknown response type: {type(agent_response)}"
     except Exception as e:
         return f"Error extracting answer: {e}"
 
 
-# -------- Network / Environment helpers ---------
-def get_local_ip() -> str:
-    """
-    Returns a best-effort local IP address for 'how to connect' instructions.
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Network helpers
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    Falls back to 'localhost' if detection fails.
-    """
+def get_local_ip() -> str:
+    """Returns best-effort local IP for dashboard access instructions."""
     ip = "localhost"
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            # This address doesn't need to be reachable; it's used to pick an interface.
             s.connect(("10.255.255.255", 1))
             ip = s.getsockname()[0]
         finally:
@@ -173,32 +193,35 @@ def get_local_ip() -> str:
     return ip
 
 
-# -------- Sidebar / Navigation ---------
-def sidebar(img_path: str) -> str:
-    """
-    Renders the sidebar with logo, navigation, and About info.
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Sidebar / Navigation
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    Returns:
-        The currently selected menu item (e.g., 'Codebase Chatgpt', 'About').
+def sidebar(logo_path: str) -> str:
+    """
+    Renders the CARE-branded sidebar with logo, navigation, and version info.
+
+    Returns the currently selected page name.
     """
     with st.sidebar:
-        # --- Logo and App Title ---
-        if img_path:
+        # Logo
+        if logo_path and os.path.isfile(logo_path):
             try:
-                st.image(img_path, use_container_width=True)
+                st.image(logo_path, use_container_width=True)
             except Exception:
-                st.warning("Logo image could not be loaded.")
+                pass
+
         st.markdown(
-            "<h5 style='text-align:center; color:#12325A; margin-top:-10px; "
-            "margin-bottom:18px;'>CNSS</h5>",
+            f"<h5 style='text-align:center; color:{CARE_CYAN}; margin-top:-10px; "
+            f"margin-bottom:18px;'>CARE</h5>",
             unsafe_allow_html=True,
         )
 
-        # --- Navigation Section ---
-        st.markdown("### 🗂️ Navigation")
-        menu = st.radio(
-            "Main Menu",  # Non-empty label avoids Streamlit warnings
-            ("Codebase Chatgpt", "About"),
+        # Navigation
+        st.markdown("### Navigation")
+        page = st.radio(
+            "Main Menu",
+            ("Chat", "About", "FAQ"),
             index=0,
             label_visibility="collapsed",
         )
@@ -208,63 +231,44 @@ def sidebar(img_path: str) -> str:
             unsafe_allow_html=True,
         )
 
-        # --- About Section ---
-        if menu == "About":
-            net_ip = get_local_ip()
-            st.markdown(
-                f"""
-                <hr>
-                <p style='text-align: center; font-size: 15px; color: #F3F6FB;'>
-                    <b>Codebase Analysis Dashboard</b><br>
-                    Executive analytics for your codebase metrics and health.<br>
-                    <b>Contact:</b> sendpavanr@gmail.com
-                </p>
-                <hr>
-                <div style='font-size:13px; color: #FFD700; text-align:center;'>
-                    <b>How to access this dashboard:</b><br>
-                    On this machine: <a href="http://localhost:8502" target="_blank">
-                    http://localhost:8502</a><br>
-                    On another device on the same network:
-                    <a href="http://{net_ip}:8502" target="_blank">
-                    http://{net_ip}:8502</a><br>
-                    <i>Note: "0.0.0.0" is a server listening address—not a real URL.<br>
-                    Always use "localhost" or your computer's network IP as above.</i>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        # Feedback toggle
+        feedback_on = feedback_toggle_sidebar()
+        st.session_state["feedback_mode"] = feedback_on
 
-    return menu
+        # Version badge
+        st.markdown(
+            f"<div style='text-align:center; margin-top:20px; padding:8px; "
+            f"background:{CARE_CARD_BG}; border-radius:8px; border:1px solid #2A2A2A;'>"
+            f"<span style='color:{CARE_ACCENT}; font-size:12px;'>CARE v2.0</span><br>"
+            f"<span style='color:#888; font-size:11px;'>Codebase Analysis<br>&amp; Refactor Engine</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    return page
 
 
-# -------- Chat context helpers ---------
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Chat context helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def get_limited_chat_context(
     history: Sequence[Tuple[str, str]],
     summary: str,
     max_turns: int = 25,
 ) -> List[Dict[str, str]]:
     """
-    Creates a list of messages suitable for an LLM chat API.
+    Builds a message list for LLM chat APIs from conversation history.
 
-    - Puts the summarized history (if any) into a single system message.
-    - Adds up to the last `max_turns` user + assistant messages.
-
-    Args:
-        history: List of (speaker, text) tuples. Speaker is "You" or "Assistant".
-        summary: Previous summary text, if any.
-        max_turns: Maximum number of recent turns to include.
-
-    Returns:
-        A list of dicts with 'role' and 'content' keys.
+    Puts summarized history into a system message, then appends
+    up to max_turns recent user/assistant messages.
     """
     context: List[Dict[str, str]] = []
     if summary:
-        context.append(
-            {
-                "role": "system",
-                "content": f"Summary of earlier conversation: {summary}",
-            }
-        )
+        context.append({
+            "role": "system",
+            "content": f"Summary of earlier conversation: {summary}",
+        })
 
     for speaker, text in list(history)[-max_turns:]:
         role = "user" if speaker == "You" else "assistant"
@@ -278,14 +282,10 @@ def process_uploaded_file(uploaded_file: Any) -> Optional[Any]:
     """
     Placeholder for file processing / indexing logic.
 
-    This is intentionally a stub for now; implement your own logic to:
-    - Parse the uploaded file.
-    - Extract and index its contents for downstream retrieval / QA.
-
-    Returns:
-        Processed representation of the uploaded file, if implemented.
+    Implement to parse uploaded files and index their contents
+    for downstream retrieval or QA.
     """
-    # TODO: Implement actual file processing logic when needed.
+    # TODO: Implement actual file processing when needed.
     return None
 
 
@@ -296,67 +296,40 @@ def summarize_chat(
     """
     Summarizes a list of (speaker, text) chat tuples.
 
-    Note:
-        This is a simple fallback implementation that concatenates text and
-        clips to a reasonable length. Replace with an LLM-based summarizer
-        via your orchestration layer for better quality.
-
-    Args:
-        messages: List of (speaker, text) tuples.
-        prev_summary: Existing summary to prepend.
-
-    Returns:
-        A concise text summary (may be truncated).
+    Simple fallback implementation; replace with LLM-based summarizer
+    for higher quality.
     """
     chat_text = "\n".join(f"{speaker}: {text}" for speaker, text in messages)
     if not chat_text:
         return prev_summary
 
     full = (prev_summary + "\n" + chat_text).strip()
-    return full[:1000]  # Clip to reasonable length
+    return full[:1000]
 
 
-# -------- Feedback helpers ---------
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Feedback helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def feedback_toggle_sidebar() -> bool:
-    """
-    Displays a sidebar toggle for user feedback participation.
-
-    Returns:
-        True if the user has opted into feedback; False otherwise.
-    """
-    # Use st.sidebar.toggle when available (Streamlit ≥ 1.32), else fallback.
-    if hasattr(st.sidebar, "toggle"):
-        return st.sidebar.toggle(
-            "Participate in Feedback? (optional)",
-            help=(
-                "If enabled, you'll be shown feedback options after each response. "
-                "All feedback is voluntary. Feedback and input may be recorded to "
-                "improve this tool."
-            ),
-        )
-    return st.sidebar.checkbox(
-        "Participate in Feedback? (optional)",
-        help=(
-            "If enabled, you'll be shown feedback options after each response. "
-            "All feedback is voluntary. Feedback and input may be recorded to "
-            "improve this tool."
-        ),
+    """Displays a sidebar toggle for user feedback participation."""
+    help_text = (
+        "If enabled, feedback options appear after each response. "
+        "All feedback is voluntary and may be used to improve this tool."
     )
+    if hasattr(st.sidebar, "toggle"):
+        return st.sidebar.toggle("Feedback Mode", help=help_text)
+    return st.sidebar.checkbox("Feedback Mode", help=help_text)
 
 
 def feedback_info_if_enabled() -> None:
-    """
-    Shows an info block if feedback mode is on, or a caption if it's off.
-    """
-    enabled = st.session_state.get("feedback_mode", False)
-    if enabled:
+    """Shows an info block if feedback mode is on, or a caption if off."""
+    if st.session_state.get("feedback_mode", False):
         st.info(
-            "📝 **Feedback is optional.**\n\n"
-            "**What does 'hallucination' mean?**\n"
-            "A hallucination is when the bot says something factually wrong, "
-            "makes up data, or invents test results.\n\n"
-            "_Notice: If you provide feedback, your input/feedback may be stored "
-            "and used to improve this tool._"
+            "**Feedback is optional.**\n\n"
+            "A *hallucination* is when the assistant says something factually wrong, "
+            "makes up data, or invents results.\n\n"
+            "_Your input/feedback may be stored and used to improve CARE._"
         )
     else:
         st.caption("Feedback mode is OFF. No response ratings will be recorded.")
@@ -370,13 +343,7 @@ def feedback_widget(
     """
     Renders feedback controls (like / dislike / hallucination) for a response.
 
-    Args:
-        response_id: Index of the response in the current chat.
-        user_message: The corresponding user message.
-        bot_response: The assistant's answer.
-
-    Returns:
-        A feedback dict if the user provided feedback; otherwise None.
+    Returns a feedback dict if the user interacted, otherwise None.
     """
     if not st.session_state.get("feedback_mode", False):
         return None
@@ -385,7 +352,7 @@ def feedback_widget(
 
     with col1:
         st.markdown(
-            "<span style='font-weight:bold; font-size:16px;'>Feedback response:</span>",
+            "<span style='font-weight:bold; font-size:16px;'>Rate response:</span>",
             unsafe_allow_html=True,
         )
     with col2:
@@ -405,20 +372,19 @@ def feedback_widget(
 
         if selection:
             st.markdown(
-                "<span style='background-color:#e5f6fd; border-radius:4px; "
-                "padding:4px 8px; color:#0a4a6f; font-size:15px;'>"
+                f"<span class='feedback-summary'>"
                 f"<b>Selected:</b> {' | '.join(selection)}</span>",
                 unsafe_allow_html=True,
             )
         else:
             st.markdown(
-                "<span style='color: #8c8c8c; font-size:14px;'>Selected: None</span>",
+                "<span style='color:#888; font-size:14px;'>Selected: None</span>",
                 unsafe_allow_html=True,
             )
 
     if liked or disliked or halluc:
-        st.success("Thank you for your feedback! 🙏")
-        feedback = {
+        st.success("Thank you for your feedback!")
+        return {
             "user_message": user_message,
             "bot_response": bot_response,
             "liked": liked,
@@ -426,6 +392,5 @@ def feedback_widget(
             "hallucination": halluc,
             "timestamp": pd.Timestamp.now().isoformat(),
         }
-        return feedback
 
     return None

@@ -1,9 +1,13 @@
+# CARE — Codebase Analysis & Refactor Engine
+# Streamlit theme configuration
+
 [theme]
 base = "dark"
-primaryColor="#cccccc"
-backgroundColor="#0d0d0d"
-secondaryBackgroundColor="#1a1a1a"
-textColor="#e6e6e6"
+primaryColor = "#00BCD4"
+backgroundColor = "#0D1B2A"
+secondaryBackgroundColor = "#1B2838"
+textColor = "#E0E0E0"
+font = "sans serif"
 
 [server]
 address = "0.0.0.0"
