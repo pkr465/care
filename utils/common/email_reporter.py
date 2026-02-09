@@ -1,312 +1,548 @@
-import os
-import sys
+# email_reporter.py
+"""
+Standalone Email Reporter for Codebase Analysis reports.
+
+Provides:
+- Professional HTML email generation with stats, metadata, and analysis
+- SMTP-based email sending (no external SDK dependencies)
+- Optional file attachment with size validation
+- Configurable via EnvConfig or direct parameters
+- Fallback: generates HTML file if SMTP is unavailable
+
+Dependencies: Python stdlib only (smtplib, email)
+Optional:     utils.parsers.env_parser.EnvConfig
+
+Usage:
+    from utils.common.email_reporter import EmailReporter
+
+    reporter = EmailReporter(smtp_host="smtp.gmail.com", smtp_port=587)
+    reporter.send_report(
+        recipients="team@example.com",
+        metadata={"Project": "MyApp", "Branch": "main"},
+        stats={"Files Scanned": 120, "Issues Found": 8},
+        analysis_summary="Found 8 issues across 3 modules...",
+        attachment_path="./report.xlsx",
+    )
+"""
+
+from __future__ import annotations
+
 import logging
-import traceback
-import contextlib
+import os
+import smtplib
+import mimetypes
 from datetime import datetime
-from typing import List, Dict, Any, Union
+from email.message import EmailMessage
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+from dataclasses import dataclass, field
 
-# --- LangChain & QGenie Imports ---
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain.prompts import ChatPromptTemplate
-from langchain_core.messages import HumanMessage
-from qgenie.integrations.langchain import QGenieChat
-from qgenie_sdk_tools.tools.email import email_tool
-
-# --- Environment Configuration ---
-try:
-    from utils.parsers.env_parser import EnvConfig
-except ImportError:
-    class EnvConfig:
-        def __init__(self):
-            self.config = {
-                'LLM_MODEL': os.getenv('LLM_MODEL', 'Turbo'),
-                'QGENIE_API_KEY': os.getenv('QGENIE_API_KEY', '')
-            }
-
-# Configure logging
-logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Context Manager to Silence External Prints ---
-@contextlib.contextmanager
-def suppress_output():
-    """Redirects stdout and stderr to devnull to silence external library prints."""
-    with open(os.devnull, 'w') as fnull:
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        sys.stdout = fnull
-        sys.stderr = fnull
-        try:
-            yield
-        finally:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
 
-class CodebaseEmailReporter:
-    """
-    Unified Email Reporter for Codebase Analysis & Fixer Agents.
-    """
-    
-    MAX_ATTACHMENT_SIZE = 15 * 1024 * 1024  # 15 MB Limit
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
-    def __init__(self):
-        self.logger = logging.getLogger("CodebaseEmailReporter")
-        
-        # Initialize Config
-        self.env = EnvConfig()
-        self.model_name = self.env.config.get('LLM_MODEL', 'Turbo')
-        self.api_key = self.env.config.get('QGENIE_API_KEY')
-        
-        try:
-            # Initialize LLM
-            self.llm = QGenieChat(
-                model=self.model_name,
-                max_tokens=4096, 
-                temperature=0.0, 
-                api_key=self.api_key,
-                timeout=60000 
+@dataclass
+class EmailConfig:
+    """Configuration for email sending."""
+
+    # SMTP settings
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+
+    # Sender / defaults
+    sender_email: str = ""
+    sender_name: str = "Codebase Analysis Agent"
+
+    # Limits
+    max_attachment_size: int = 15 * 1024 * 1024  # 15 MB
+
+    # Fallback behavior
+    save_html_on_failure: bool = True
+    html_fallback_dir: str = "./out"
+
+    @classmethod
+    def from_env(cls, env_config=None) -> "EmailConfig":
+        """Build config from EnvConfig or environment variables."""
+        import os as _os
+
+        if env_config is None:
+            try:
+                from utils.parsers.env_parser import EnvConfig
+                env_config = EnvConfig()
+            except ImportError:
+                env_config = None
+
+        def _get(key: str, default: Any = "") -> Any:
+            if env_config and hasattr(env_config, "get"):
+                val = env_config.get(key)
+                if val is not None and val != "":
+                    return val
+            return _os.getenv(key, default)
+
+        return cls(
+            smtp_host=str(_get("SMTP_HOST", "")),
+            smtp_port=int(_get("SMTP_PORT", 587)),
+            smtp_username=str(_get("SMTP_USERNAME", "")),
+            smtp_password=str(_get("SMTP_PASSWORD", "")),
+            smtp_use_tls=str(_get("SMTP_USE_TLS", "true")).lower() in ("1", "true", "yes"),
+            sender_email=str(_get("SMTP_SENDER_EMAIL", _get("EMAIL_ID", ""))),
+            sender_name=str(_get("SMTP_SENDER_NAME", "Codebase Analysis Agent")),
+            html_fallback_dir=str(_get("OUT_DIR", "./out")),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class EmailError(Exception):
+    """Base error for email operations."""
+
+
+class EmailSendError(EmailError):
+    """Failed to send email via SMTP."""
+
+
+class EmailConfigError(EmailError):
+    """Email configuration is invalid or incomplete."""
+
+
+# ---------------------------------------------------------------------------
+# HTML Report Generator
+# ---------------------------------------------------------------------------
+
+class HTMLReportGenerator:
+    """
+    Generates professional HTML email bodies for codebase analysis reports.
+
+    Produces responsive, inline-styled HTML that renders well in
+    all major email clients (Gmail, Outlook, Apple Mail).
+    """
+
+    @staticmethod
+    def generate(
+        metadata: Dict[str, Any],
+        stats: Dict[str, Any],
+        analysis_summary: str = "",
+        title: str = "Codebase Analysis Report",
+        subtitle: str = "Generated by Codebase Analysis Agent",
+    ) -> str:
+        """
+        Generate a complete HTML report email body.
+
+        Args:
+            metadata: Key-value pairs for the "Run Details" section.
+            stats: Key-value pairs for the statistics grid.
+            analysis_summary: Executive summary text (supports newlines).
+            title: Report title in the header banner.
+            subtitle: Subtitle under the title.
+
+        Returns:
+            Complete HTML string ready for email body.
+        """
+        today = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        # Build stats grid items
+        stats_html = ""
+        if stats:
+            for key, value in stats.items():
+                k_lower = key.lower()
+                if any(x in k_lower for x in ("fail", "error", "bug", "critical", "issue")):
+                    border_color = "#e74c3c"
+                    icon = "&#128027;"  # bug emoji
+                elif any(x in k_lower for x in ("pass", "fix", "success", "scanned", "clean")):
+                    border_color = "#27ae60"
+                    icon = "&#9989;"   # check mark
+                elif any(x in k_lower for x in ("warn", "skip", "pending")):
+                    border_color = "#f39c12"
+                    icon = "&#9888;"   # warning
+                else:
+                    border_color = "#3498db"
+                    icon = "&#8505;"   # info
+                stats_html += (
+                    f'<div style="background:#fff;padding:12px;border-radius:6px;'
+                    f'border-left:4px solid {border_color};'
+                    f'box-shadow:0 1px 3px rgba(0,0,0,0.1);text-align:center;">'
+                    f'<div style="font-size:11px;text-transform:uppercase;color:#7f8c8d;'
+                    f'font-weight:bold;letter-spacing:0.5px;">{key}</div>'
+                    f'<div style="font-size:20px;font-weight:700;color:#2c3e50;'
+                    f'margin-top:4px;">{icon} {value}</div></div>'
+                )
+
+        # Build metadata table rows
+        meta_rows = ""
+        for key, value in metadata.items():
+            meta_rows += (
+                f"<tr>"
+                f"<td style='padding:6px 10px;border-bottom:1px solid #eee;"
+                f"color:#666;width:40%;'>{key}</td>"
+                f"<td style='padding:6px 10px;border-bottom:1px solid #eee;"
+                f"font-weight:600;color:#333;'>{value}</td>"
+                f"</tr>"
             )
-        except Exception as e:
-            self.logger.error(f"Failed to init QGenieChat: {e}")
+        # Add timestamp row
+        meta_rows += (
+            f"<tr><td style='padding:6px 10px;border-bottom:1px solid #eee;"
+            f"color:#666;'>Generated On</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #eee;"
+            f"font-weight:600;'>{today}</td></tr>"
+        )
+
+        # Build analysis section
+        analysis_section = ""
+        if analysis_summary:
+            analysis_html = analysis_summary.replace("\n", "<br/>")
+            analysis_section = (
+                '<div style="background:#f8f9fa;padding:15px;border-radius:6px;'
+                'border:1px solid #e9ecef;margin-top:20px;">'
+                '<h3 style="margin-top:0;margin-bottom:10px;font-size:16px;'
+                'color:#2c3e50;border-bottom:1px solid #ddd;padding-bottom:8px;">'
+                'Executive Summary</h3>'
+                f'<div style="font-size:14px;line-height:1.6;color:#444;">'
+                f'{analysis_html}</div></div>'
+            )
+
+        return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="font-family:'Segoe UI',Helvetica,Arial,sans-serif;background-color:#f4f6f8;margin:0;padding:20px;">
+<div style="max-width:700px;margin:0 auto;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.08);">
+
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#2c3e50 0%,#4a698a 100%);padding:20px;text-align:center;color:white;">
+        <h1 style="margin:0;font-size:22px;">{title}</h1>
+        <div style="margin-top:5px;font-size:13px;opacity:0.9;">{subtitle}</div>
+    </div>
+
+    <div style="padding:25px;">
+        <p style="color:#555;font-size:14px;line-height:1.5;">
+            Hello,<br><br>
+            The automated codebase analysis is complete. Please find the summary below.
+            A detailed report is available in the attached file if included.
+        </p>
+
+        <!-- Statistics Grid -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px;">
+            {stats_html}
+        </div>
+
+        <!-- Analysis -->
+        {analysis_section}
+
+        <!-- Metadata -->
+        <div style="margin-top:25px;">
+            <h3 style="font-size:15px;color:#2c3e50;border-bottom:2px solid #eee;padding-bottom:5px;margin-bottom:10px;">Run Details</h3>
+            <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                {meta_rows}
+            </table>
+        </div>
+
+        <!-- Footer Note -->
+        <div style="margin-top:25px;padding:12px;background:#e3f2fd;border-left:4px solid #2196f3;color:#0d47a1;font-size:13px;border-radius:4px;">
+            <strong>Note:</strong> This is an automated message. Please review the attachment for detailed findings.
+        </div>
+    </div>
+
+    <div style="background:#f8f9fa;padding:15px;text-align:center;font-size:11px;color:#95a5a6;border-top:1px solid #eee;">
+        Codebase Analysis Engine &bull; Internal Use Only
+    </div>
+</div>
+</body>
+</html>"""
+
+
+# ---------------------------------------------------------------------------
+# Email Reporter
+# ---------------------------------------------------------------------------
+
+class EmailReporter:
+    """
+    Standalone email reporter for codebase analysis results.
+
+    Features:
+    - Professional HTML email generation
+    - SMTP email sending with TLS support
+    - File attachment with size validation
+    - Fallback: saves HTML to disk if SMTP unavailable
+    - No external SDK dependencies (pure stdlib)
+
+    Usage:
+        reporter = EmailReporter()
+        reporter = EmailReporter(config=EmailConfig(smtp_host="..."))
+        reporter = EmailReporter.from_env()
+
+        success = reporter.send_report(
+            recipients="user@example.com",
+            metadata={"Project": "MyApp"},
+            stats={"Files": 100, "Issues": 5},
+            analysis_summary="Found 5 issues...",
+            attachment_path="report.xlsx",
+        )
+    """
+
+    def __init__(self, config: Optional[EmailConfig] = None, env_config=None):
+        """
+        Initialize the email reporter.
+
+        Args:
+            config: Explicit EmailConfig. If None, loads from environment.
+            env_config: Optional EnvConfig for environment-based config.
+        """
+        if config:
+            self.config = config
+        else:
+            self.config = EmailConfig.from_env(env_config)
+
+        self.html_generator = HTMLReportGenerator()
+        self.logger = logger
+
+    @classmethod
+    def from_env(cls, env_config=None) -> "EmailReporter":
+        """Factory: build EmailReporter from environment configuration."""
+        return cls(config=EmailConfig.from_env(env_config))
 
     def send_report(
-        self, 
-        recipients: Union[str, List[str]], 
-        attachment_path: str, 
-        metadata: Dict[str, Any], 
-        stats: Dict[str, Any], 
-        analysis_summary: str
+        self,
+        recipients: Union[str, List[str]],
+        metadata: Dict[str, Any],
+        stats: Dict[str, Any],
+        analysis_summary: str = "",
+        attachment_path: Optional[str] = None,
+        subject: Optional[str] = None,
+        title: str = "Codebase Analysis Report",
     ) -> bool:
         """
-        Generates the HTML report and invokes the QGenie Agent to send it.
-        """
+        Generate and send an HTML codebase analysis report via email.
 
-        # 1. Validate Recipients
-        if not recipients:
+        Args:
+            recipients: Email address(es) - string or list.
+            metadata: Key-value run details (Project, Branch, User, etc.).
+            stats: Key-value statistics (Files Scanned, Issues Found, etc.).
+            analysis_summary: Executive summary text.
+            attachment_path: Optional path to a file to attach.
+            subject: Email subject line (auto-generated if None).
+            title: Report title in the HTML header.
+
+        Returns:
+            True if email was sent (or HTML saved as fallback), False on failure.
+        """
+        # Normalize recipients
+        if isinstance(recipients, list):
+            recipient_list = [str(r).strip() for r in recipients if r]
+        else:
+            recipient_list = [
+                r.strip() for r in str(recipients).split(",") if r.strip()
+            ]
+
+        if not recipient_list:
             self.logger.error("No recipients provided.")
             return False
-            
-        if isinstance(recipients, list):
-            recipients_str = ",".join(str(r).strip() for r in recipients)
-        else:
-            recipients_str = str(recipients).strip()
 
-        # 2. Validate Attachment
-        final_attachment_path = None
-        if attachment_path:
-            if os.path.exists(attachment_path):
-                size = os.path.getsize(attachment_path)
-                if size > self.MAX_ATTACHMENT_SIZE:
-                    self.logger.warning(f"Attachment too large ({size} bytes). Skipping.")
-                    final_attachment_path = None
-                else:
-                    final_attachment_path = attachment_path
-            else:
-                self.logger.warning(f"Attachment not found: {attachment_path}")
-                final_attachment_path = None
+        # Generate subject
+        if not subject:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            project = metadata.get("Project", metadata.get("project", ""))
+            subject = f"Codebase Analysis Report - {project} - {date_str}" if project else f"Codebase Analysis Report - {date_str}"
 
-        # 3. Generate HTML Content
+        # Generate HTML body
         try:
-            html_body = self._generate_html(metadata, stats, analysis_summary)
+            html_body = self.html_generator.generate(
+                metadata=metadata,
+                stats=stats,
+                analysis_summary=analysis_summary,
+                title=title,
+            )
         except Exception as e:
-            self.logger.error(f"Error generating HTML: {e}")
+            self.logger.error("Failed to generate HTML report: %s", e)
             return False
 
-        # 4. Invoke Agent (Wrapped in silencer)
-        # We suppress output here because the SDK prints status messages to stdout
-        with suppress_output():
-            return self._invoke_email_agent(recipients_str, html_body, final_attachment_path)
+        # Validate attachment
+        validated_attachment = self._validate_attachment(attachment_path)
 
-    def _invoke_email_agent(self, recipients: str, html_body: str, attachment: str) -> bool:
-        """
-        Sets up the LangChain Agent with email_tool and executes the request.
-        """
-        
-        # Prepare exact arguments for the tool
-        tool_input = {
-            "email_address": recipients,
-            "subject": f"Codebase Analysis Report - {datetime.now().strftime('%Y-%m-%d')}",
-            "body": html_body,
-            "attachment": attachment, 
-            "is_html": True
-        }
-        
-        try:
-            tools = [email_tool]
-
-            # 1. Primary Method: Agent Executor
-            system_prompt = (
-                "You are an AI Email Assistant. "
-                "You have access to a tool called 'email_tool'. "
-                "When asked to send an email, you MUST generate a tool call for 'email_tool' using the EXACT arguments provided in the prompt. "
-                "Do NOT generate text. ONLY generate the tool call."
-            )
-
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
-                ("human", 
-                 "Call the email_tool function with these EXACT parameters:\n"
-                 "email_address: {recipients}\n"
-                 "subject: {subject}\n"
-                 "attachment: {attachment}\n"
-                 "body: <Provided in variable below>\n\n"
-                 "HTML Body Content:\n{html_body}\n\n"
-                 "EXECUTE TOOL NOW."
-                ),
-                ("placeholder", "{agent_scratchpad}"),
-            ])
-
-            agent = create_tool_calling_agent(self.llm, tools, prompt)
-            agent_executor = AgentExecutor(
-                agent=agent, 
-                tools=tools, 
-                verbose=False,
-                handle_parsing_errors=True,
-                return_intermediate_steps=True 
-            )
-
-            result = agent_executor.invoke({
-                "recipients": tool_input["email_address"],
-                "subject": tool_input["subject"],
-                "attachment": str(tool_input["attachment"]) if tool_input["attachment"] else "None",
-                "html_body": tool_input["body"]
-            })
-            
-            # 2. Verify if the tool was actually executed
-            steps = result.get("intermediate_steps", [])
-            tool_called = False
-            
-            for step in steps:
-                if isinstance(step, tuple) and len(step) > 0:
-                    action = step[0]
-                    if getattr(action, 'tool', '') == 'email_tool':
-                        tool_called = True
-
-            if tool_called:
+        # Try SMTP send
+        if self.config.smtp_host:
+            try:
+                self._send_smtp(
+                    recipients=recipient_list,
+                    subject=subject,
+                    html_body=html_body,
+                    attachment_path=validated_attachment,
+                )
+                self.logger.info("Email sent to %s", ", ".join(recipient_list))
                 return True
-                
-            # 3. Fallback: Direct Invocation
-            direct_result = email_tool.invoke(tool_input)
+            except Exception as e:
+                self.logger.error("SMTP send failed: %s", e)
+                # Fall through to HTML fallback
+
+        # Fallback: save HTML to file
+        if self.config.save_html_on_failure:
+            return self._save_html_fallback(html_body, subject)
+
+        self.logger.warning("No SMTP configured and fallback disabled.")
+        return False
+
+    def generate_html_only(
+        self,
+        metadata: Dict[str, Any],
+        stats: Dict[str, Any],
+        analysis_summary: str = "",
+        title: str = "Codebase Analysis Report",
+        output_path: Optional[str] = None,
+    ) -> str:
+        """
+        Generate the HTML report without sending email.
+
+        Args:
+            metadata: Run details.
+            stats: Statistics.
+            analysis_summary: Executive summary.
+            title: Report title.
+            output_path: If provided, saves HTML to this file.
+
+        Returns:
+            The generated HTML string.
+        """
+        html = self.html_generator.generate(
+            metadata=metadata,
+            stats=stats,
+            analysis_summary=analysis_summary,
+            title=title,
+        )
+
+        if output_path:
+            path = Path(output_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(html, encoding="utf-8")
+            self.logger.info("HTML report saved to: %s", output_path)
+
+        return html
+
+    # ------------------------------------------------------------------
+    # Private Methods
+    # ------------------------------------------------------------------
+
+    def _validate_attachment(self, attachment_path: Optional[str]) -> Optional[str]:
+        """Validate an attachment file exists and is within size limits."""
+        if not attachment_path:
+            return None
+
+        path = Path(attachment_path)
+        if not path.exists():
+            self.logger.warning("Attachment not found: %s", attachment_path)
+            return None
+
+        size = path.stat().st_size
+        if size > self.config.max_attachment_size:
+            self.logger.warning(
+                "Attachment too large (%d bytes > %d limit): %s",
+                size, self.config.max_attachment_size, attachment_path,
+            )
+            return None
+
+        if size == 0:
+            self.logger.warning("Attachment is empty: %s", attachment_path)
+            return None
+
+        return str(path)
+
+    def _send_smtp(
+        self,
+        recipients: List[str],
+        subject: str,
+        html_body: str,
+        attachment_path: Optional[str] = None,
+    ) -> None:
+        """
+        Send an email via SMTP.
+
+        Args:
+            recipients: List of recipient email addresses.
+            subject: Email subject line.
+            html_body: HTML content for the email body.
+            attachment_path: Optional file to attach.
+
+        Raises:
+            EmailSendError: If SMTP connection or sending fails.
+        """
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = (
+            f"{self.config.sender_name} <{self.config.sender_email}>"
+            if self.config.sender_name
+            else self.config.sender_email
+        )
+        msg["To"] = ", ".join(recipients)
+
+        # Set HTML content
+        msg.set_content(
+            "This email requires an HTML-compatible email client to view.",
+        )
+        msg.add_alternative(html_body, subtype="html")
+
+        # Attach file if provided
+        if attachment_path:
+            path = Path(attachment_path)
+            mime_type, _ = mimetypes.guess_type(str(path))
+            if mime_type:
+                maintype, subtype = mime_type.split("/", 1)
+            else:
+                maintype, subtype = "application", "octet-stream"
+
+            with open(path, "rb") as f:
+                msg.add_attachment(
+                    f.read(),
+                    maintype=maintype,
+                    subtype=subtype,
+                    filename=path.name,
+                )
+
+        # Send via SMTP
+        try:
+            if self.config.smtp_use_tls:
+                with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                    if self.config.smtp_username and self.config.smtp_password:
+                        server.login(self.config.smtp_username, self.config.smtp_password)
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port) as server:
+                    if self.config.smtp_username and self.config.smtp_password:
+                        server.login(self.config.smtp_username, self.config.smtp_password)
+                    server.send_message(msg)
+
+        except smtplib.SMTPException as e:
+            raise EmailSendError(f"SMTP error: {e}") from e
+        except OSError as e:
+            raise EmailSendError(f"Network error connecting to SMTP: {e}") from e
+
+    def _save_html_fallback(self, html_body: str, subject: str) -> bool:
+        """Save HTML report to disk as a fallback when SMTP is unavailable."""
+        try:
+            fallback_dir = Path(self.config.html_fallback_dir)
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"email_report_{timestamp}.html"
+            filepath = fallback_dir / filename
+
+            filepath.write_text(html_body, encoding="utf-8")
+            self.logger.info(
+                "SMTP unavailable. HTML report saved to: %s", filepath,
+            )
             return True
 
         except Exception as e:
-            # We print error to stderr explicitly so it might still show up if only stdout is suppressed,
-            # but since we wrapped both in suppress_output, this will also be hidden unless we change the wrapper.
-            # Assuming silence is desired for success path only.
-            self.logger.error(f"Failed to send email: {e}")
+            self.logger.error("Failed to save HTML fallback: %s", e)
             return False
 
-    def _generate_html(self, metadata: Dict, stats: Dict, analysis: str) -> str:
-        """
-        Generates a clean, professional HTML report.
-        """
-        today = datetime.today().strftime('%Y-%m-%d %H:%M')
-        
-        # --- Stats Grid Generation ---
-        stats_items = ""
-        if stats:
-            for k, v in stats.items():
-                k_lower = k.lower()
-                if any(x in k_lower for x in ['fail', 'error', 'bug', 'critical']):
-                    border_color = "#e74c3c" # Red
-                    icon = "🐞"
-                elif any(x in k_lower for x in ['pass', 'fix', 'success', 'scanned']):
-                    border_color = "#27ae60" # Green
-                    icon = "✅"
-                else:
-                    border_color = "#3498db" # Blue
-                    icon = "ℹ️"
-                
-                stats_items += f"""
-                <div style="background:#fff; padding:12px; border-radius:6px; border-left: 4px solid {border_color}; box-shadow: 0 1px 3px rgba(0,0,0,0.1); text-align:center;">
-                    <div style="font-size:11px; text-transform:uppercase; color:#7f8c8d; font-weight:bold; letter-spacing:0.5px;">{k}</div>
-                    <div style="font-size:20px; font-weight:700; color:#2c3e50; margin-top:4px;">{icon} {v}</div>
-                </div>
-                """
-
-        # --- Metadata Table Generation ---
-        meta_rows = ""
-        for k, v in metadata.items():
-            meta_rows += f"<tr><td style='padding:6px 10px; border-bottom:1px solid #eee; color:#666; width:40%;'>{k}</td><td style='padding:6px 10px; border-bottom:1px solid #eee; font-weight:600; color:#333;'>{v}</td></tr>"
-
-        # --- Analysis Text Formatting ---
-        if analysis:
-            analysis_html = analysis.replace("\n", "<br/>")
-            analysis_section = f"""
-            <div style="background:#f8f9fa; padding:15px; border-radius:6px; border:1px solid #e9ecef; margin-top:20px;">
-                <h3 style="margin-top:0; margin-bottom:10px; font-size:16px; color:#2c3e50; border-bottom:1px solid #ddd; padding-bottom:8px;">🔍 Executive Summary</h3>
-                <div style="font-size:14px; line-height:1.6; color:#444;">{analysis_html}</div>
-            </div>
-            """
-        else:
-            analysis_section = ""
-
-        # --- Full HTML Template ---
-        return f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-        </head>
-        <body style="font-family: 'Segoe UI', Helvetica, Arial, sans-serif; background-color: #f4f6f8; margin: 0; padding: 20px;">
-            <div style="max-width: 700px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.08);">
-                
-                <!-- Header -->
-                <div style="background: linear-gradient(135deg, #2c3e50 0%, #4a698a 100%); padding: 20px; text-align: center; color: white;">
-                    <h1 style="margin:0; font-size:22px;">Codebase Analysis Report</h1>
-                    <div style="margin-top:5px; font-size:13px; opacity:0.9;">Generated by QGenie Agent</div>
-                </div>
-                
-                <div style="padding: 25px;">
-                    <p style="color:#555; font-size:14px; line-height:1.5;">
-                        Hello,<br><br>
-                        The automated codebase analysis is complete. Please find the summary of results below.
-                        A detailed line-by-line report is available in the attached Excel file.
-                    </p>
-                    
-                    <!-- Statistics Grid -->
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px;">
-                        {stats_items}
-                    </div>
-
-                    <!-- Analysis Section -->
-                    {analysis_section}
-
-                    <!-- Metadata Section -->
-                    <div style="margin-top: 25px;">
-                        <h3 style="font-size:15px; color:#2c3e50; border-bottom:2px solid #eee; padding-bottom:5px; margin-bottom:10px;">⚙️ Run Details</h3>
-                        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-                            {meta_rows}
-                            <tr><td style='padding:6px 10px; border-bottom:1px solid #eee; color:#666;'>Generated On</td><td style='padding:6px 10px; border-bottom:1px solid #eee; font-weight:600;'>{today}</td></tr>
-                        </table>
-                    </div>
-
-                    <!-- Footer Note -->
-                    <div style="margin-top:25px; padding:12px; background:#e3f2fd; border-left:4px solid #2196f3; color:#0d47a1; font-size:13px; border-radius:4px;">
-                        ℹ️ <strong>Note:</strong> This is an automated message. Please review the attachment for specific code pointers.
-                    </div>
-                </div>
-
-                <div style="background: #f8f9fa; padding: 15px; text-align: center; font-size: 11px; color: #95a5a6; border-top: 1px solid #eee;">
-                    QGenie Automation Ecosystem • Internal Use Only
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-
-if __name__ == "__main__":
-    reporter = CodebaseEmailReporter()
-    
-    dummy_stats = {"Files Scanned": 10, "Issues Fixed": 5}
-    dummy_meta = {"Project": "TestProject", "User": "pavanr"}
-    
-    # Test sending (pass "" if no attachment for test)
-    reporter.send_report(
-        recipients="sendpavanr@gmail.com", 
-        attachment_path="", 
-        metadata=dummy_meta, 
-        stats=dummy_stats, 
-        analysis_summary="This is a test run to verify email fallback logic."
-    )
+    def __repr__(self) -> str:
+        host = self.config.smtp_host or "no-smtp"
+        return f"EmailReporter(smtp='{host}:{self.config.smtp_port}')"
