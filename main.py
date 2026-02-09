@@ -43,9 +43,25 @@ except ImportError as e:
     HEALTHREPORT_GENERATOR_AVAILABLE = False
     console.print(f"[yellow]Warning: healthreport_generator not available: {e}[/yellow]")
 
+# Global config support
+try:
+    from utils.parsers.global_config_parser import GlobalConfig
+    GLOBAL_CONFIG_AVAILABLE = True
+except ImportError as e:
+    GLOBAL_CONFIG_AVAILABLE = False
+    console.print(f"[yellow]Warning: GlobalConfig not available: {e}[/yellow]")
+
 # Env and DB setup
 from utils.parsers.env_parser import EnvConfig
 from db.postgres_db_setup import PostgresDbSetup
+
+# LLM Tools
+try:
+    from utils.common.llm_tools import LLMTools
+    LLM_TOOLS_AVAILABLE = True
+except ImportError as e:
+    LLM_TOOLS_AVAILABLE = False
+    console.print(f"[yellow]Warning: LLMTools not available: {e}[/yellow]")
 
 # New flattening & NDJSON tooling
 try:
@@ -209,6 +225,13 @@ Examples:
     parser.add_argument("--codebase-path", default=None, help="Path to the C/C++ codebase")
     parser.add_argument("-d", "--out-dir", default=None, help="Output directory for generated files")
 
+    # Config file
+    parser.add_argument(
+        "--config-file",
+        default=None,
+        help="Path to global_config.yaml (default: auto-detected)",
+    )
+
     # Analysis mode
     parser.add_argument(
         "--use-llm",
@@ -231,7 +254,7 @@ Examples:
         default=None,
         help="Specific file to analyze (relative to codebase path), used with --llm-exclusive",
     )
-    
+
     parser.add_argument(
         "--use-incremental",
         action="store_true",
@@ -253,7 +276,7 @@ Examples:
         default=True,
     )
 
-    # LLM configuration
+    # LLM configuration (unified format)
     parser.add_argument(
         "--enable-llm",
         action="store_true",
@@ -261,12 +284,12 @@ Examples:
         help="Enable LLM usage inside Agents",
     )
     parser.add_argument(
-        "--llm-provider",
-        choices=["openai", "anthropic", "local", "mock", "qgenie"],
-        default="qgenie",
+        "--llm-model",
+        default=None,
+        help="LLM model in provider::model format (e.g., 'anthropic::claude-sonnet-4-20250514'). "
+             "Overrides global_config.yaml setting.",
     )
-    parser.add_argument("--llm-model", default="gemini-2.5-pro")
-    parser.add_argument("--llm-api-key")
+    parser.add_argument("--llm-api-key", default=None)
     parser.add_argument("--llm-max-tokens", type=int, default=15000)
     parser.add_argument("--llm-temperature", type=float, default=0.1)
 
@@ -368,9 +391,12 @@ def codebase_analysis_agent(state: Dict[str, Any]) -> Dict[str, Any]:
 
     opts = state.get("opts", {})
     env_config = state.get("env_config")
+    global_config = state.get("global_config")
 
     codebase_path = (
         opts.get("codebase_path")
+        or opts.get("inputpath")
+        or (global_config.get("paths.code_base_path") if global_config else None)
         or env_config.get("CODE_BASE_PATH")
         or "./codebase"
     )
@@ -743,7 +769,7 @@ def build_workflow_graph():
     return graph
 
 
-def run_workflow(user_input: str, env_config: EnvConfig, opts: Dict[str, Any]) -> Dict[str, Any]:
+def run_workflow(user_input: str, env_config: EnvConfig, global_config: Optional[Any], opts: Dict[str, Any]) -> Dict[str, Any]:
     """
     Run the full workflow, from analysis to NDJSON and vector DB ingestion.
     """
@@ -751,14 +777,22 @@ def run_workflow(user_input: str, env_config: EnvConfig, opts: Dict[str, Any]) -
 
     codebase_path = (
         opts.get("codebase_path")
+        or opts.get("inputpath")
+        or (global_config.get("paths.code_base_path") if global_config else None)
         or env_config.get("CODE_BASE_PATH")
         or "./codebase"
     )
-    out_dir = opts.get("out_dir") or "./out"
+    out_dir = (
+        opts.get("out_dir")
+        or opts.get("outputpath")
+        or (global_config.get("paths.out_dir") if global_config else None)
+        or "./out"
+    )
 
     state: Dict[str, Any] = {
         "user_input": user_input,
         "env_config": env_config,
+        "global_config": global_config,
         "opts": opts,
         "codebase_path": codebase_path,
         "out_dir": out_dir,
@@ -860,6 +894,20 @@ def run_workflow(user_input: str, env_config: EnvConfig, opts: Dict[str, Any]) -
 def main():
     try:
         opts = vars(parse_args())
+
+        # Load GlobalConfig if available, otherwise fallback to EnvConfig
+        global_config = None
+        if GLOBAL_CONFIG_AVAILABLE:
+            try:
+                config_file = opts.get("config_file")
+                if config_file:
+                    global_config = GlobalConfig(config_file)
+                else:
+                    global_config = GlobalConfig()
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not load global_config: {e}[/yellow]")
+                global_config = None
+
         env_config = EnvConfig()
 
         # Logging level
@@ -872,10 +920,11 @@ def main():
 
         log_memory_usage("startup")
 
-        # Resolve codebase path
+        # Resolve codebase path (with global config support)
         codebase_path = (
             opts.get("codebase_path")
             or opts.get("inputpath")
+            or (global_config.get("paths.code_base_path") if global_config else None)
             or env_config.get("CODE_BASE_PATH")
             or "./codebase"
         )
@@ -885,10 +934,14 @@ def main():
             sys.exit(1)
         opts["codebase_path"] = codebase_path
 
-        # Output dir
+        # Output dir (with global config support)
         if not opts.get("out_dir"):
-            opts["out_dir"] = opts.get("outputpath") or "./out"
-        
+            opts["out_dir"] = (
+                opts.get("outputpath")
+                or (global_config.get("paths.out_dir") if global_config else None)
+                or "./out"
+            )
+
         # Ensure output directory exists
         if not os.path.exists(opts["out_dir"]):
             os.makedirs(opts["out_dir"], exist_ok=True)
@@ -898,42 +951,55 @@ def main():
         # ----------------------------------------------------
         if opts.get("llm_exclusive"):
             if not LLM_EXCLUSIVE_AGENT_AVAILABLE:
-                 console.print("[red]❌ CodebaseLLMAgent not available. Check agents/codebase_llm_agent.py[/red]")
-                 sys.exit(1)
-            
+                console.print("[red]❌ CodebaseLLMAgent not available. Check agents/codebase_llm_agent.py[/red]")
+                sys.exit(1)
+
             console.print(f"[bold blue]🚀 Starting Exclusive LLM Analysis on: {codebase_path}[/bold blue]")
             console.print("[blue]ℹ️  (Bypassing Health Report & Vector DB Workflow)[/blue]")
-            
+
             try:
-                # Initialize Agent with file_to_fix argument
+                # Build shared LLM tools from config/CLI args
+                llm_model = opts.get("llm_model") or (global_config.get("llm.model") if global_config else None)
+
+                if LLM_TOOLS_AVAILABLE and llm_model:
+                    llm_tools = LLMTools(model=llm_model)
+                elif LLM_TOOLS_AVAILABLE:
+                    llm_tools = LLMTools()
+                else:
+                    llm_tools = None
+
+                # Initialize Agent with new config/llm_tools parameters
                 agent = CodebaseLLMAgent(
                     codebase_path=opts["codebase_path"],
+                    output_dir=opts["out_dir"],
+                    config=global_config,
+                    llm_tools=llm_tools,
                     exclude_dirs=opts.get("exclude_dirs", []),
                     max_files=opts.get("max_files", 10000),
                     use_ccls=opts.get("use_ccls", False),
-                    file_to_fix=opts.get("file_to_fix")
+                    file_to_fix=opts.get("file_to_fix"),
                 )
-                
+
                 # Determine output filename
-                output_filename = os.path.join(opts["out_dir"], "detailed_code_review.xlsx")
-                
+                output_filename = "detailed_code_review.xlsx"
+
                 # Run Analysis
-                report_path = agent.run_analysis(output_filename=output_filename)
-                
+                report_path = agent.run_analysis(output_filename=output_filename, email_recipients=None)
+
                 console.print(f"[green]✅ Analysis Complete![/green]")
                 console.print(f"[green]📊 Detailed Report Saved: {report_path}[/green]")
                 sys.exit(0)
-                
+
             except Exception as e:
                 console.print(f"[red]❌ Exclusive LLM Analysis failed: {e}[/red]")
                 logger.error("Exclusive LLM Analysis failed", exc_info=True)
                 sys.exit(1)
 
-       # ----------------------------------------------------
+        # ----------------------------------------------------
         # STANDARD WORKFLOW
         # ----------------------------------------------------
         user_input = f"Analyze codebase at {codebase_path}"
-        final_state = run_workflow(user_input, env_config, opts)
+        final_state = run_workflow(user_input, env_config, global_config, opts)
 
         # Optional: generate HTML health report
         if opts.get("generate_report", False) and HEALTHREPORT_GENERATOR_AVAILABLE:
@@ -947,6 +1013,7 @@ def main():
         sys.exit(130)
     except Exception as e:
         console.print(f"[red]❌ Unexpected error: {e}[/red]")
+        logger.error("Unexpected error", exc_info=True)
         sys.exit(1)
 
 
