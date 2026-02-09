@@ -1,10 +1,19 @@
+"""
+CARE Vector Database Pipeline
+Orchestrates the vector DB embedding pipeline for CARE health metrics.
+"""
 import os
 import logging
 from pathlib import Path
 from datetime import datetime
 import hashlib
 import traceback
+from typing import Union
 
+try:
+    from utils.parsers.global_config_parser import GlobalConfig
+except ImportError:
+    GlobalConfig = None
 from utils.parsers.env_parser import EnvConfig
 from db.postgres_api import PostgresVectorStore
 from db.ndjson_processor import NDJSONProcessor
@@ -12,8 +21,8 @@ from db.ndjson_processor import NDJSONProcessor
 
 class VectorDbPipeline:
     """
-    Orchestrates the vector DB embedding pipeline:
-    - Loads configuration from .env/environment
+    CARE: Orchestrates the vector DB embedding pipeline:
+    - Loads configuration from .env/environment or GlobalConfig
     - Sets up logging
     - Computes and checks input data hashes
     - Invokes embedding and database storage
@@ -26,7 +35,13 @@ class VectorDbPipeline:
 
     def __init__(self, environment=None):
         if environment is None:
-            self.env_config = EnvConfig()
+            if GlobalConfig is not None:
+                try:
+                    self.env_config = GlobalConfig()
+                except Exception:
+                    self.env_config = EnvConfig()
+            else:
+                self.env_config = EnvConfig()
         else:
             self.env_config = environment
         
@@ -52,7 +67,7 @@ class VectorDbPipeline:
         """Returns the repository root path."""
         return Path(__file__).resolve().parent.parent
 
-    def resolve_relative_path(self, relative_path: str | Path) -> Path:
+    def resolve_relative_path(self, relative_path: Union[str, Path]) -> Path:
         """Resolves a path relative to the repository root."""
         p = Path(relative_path)
         if p.is_absolute():
@@ -153,7 +168,7 @@ class VectorDbPipeline:
         return True, embedding_results_log
 
     def run(self):
-        self.logger.info(f"[DEBUG] vectordb_agent CWD is: {os.getcwd()}")
+        self.logger.debug(f"vectordb_agent CWD is: {os.getcwd()}")
         self.logger.info("Starting vector DB data pipeline...")
 
         processed_log = self.env_config.get("PROCESSED_LOG")

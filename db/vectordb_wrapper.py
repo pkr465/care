@@ -1,13 +1,23 @@
-# vectordb_wrapper.py
+"""
+CARE — Codebase Analysis & Refactor Engine
+Vector DB Wrapper: high-level interface for vector store operations.
+"""
 
 import logging
+from typing import Any, Dict, List, Optional
+
 from db.postgres_api import PostgresVectorStore
+
 
 class VectorDB:
     """
-    High-level interface for vector store operations, supporting Postgres backends.
+    High-level interface for vector store operations.
+
+    Currently supports PostgreSQL (PGVector) backend. The backend is selected
+    via the ``VECTOR_DATABASE`` key in the config (default: ``postgres``).
     """
-    def __init__(self, env_config):
+
+    def __init__(self, env_config: Dict[str, Any]) -> None:
         """
         Initialize based on env_config and instantiate the underlying store.
         Args:
@@ -18,9 +28,9 @@ class VectorDB:
         self.vector_db = env_config.get("VECTOR_DATABASE", "postgres").lower()
         self.vector_store = self._initialize_store()
 
-    def _initialize_store(self):
+    def _initialize_store(self) -> Optional[PostgresVectorStore]:
         """
-        Create and return an instance of HermesVectorStore or PostgresVectorStore.
+        Create and return an instance of the configured vector store backend.
         """
         db = self.vector_db
         if db == "postgres":
@@ -35,40 +45,43 @@ class VectorDB:
         else:
             raise ValueError(f"Unknown vector backend: {db}")
 
-    def store_embeddings(self, docs):
+    def store_embeddings(self, docs: List[Dict[str, Any]]) -> Any:
         """
         Store embeddings for a list of documents.
-        Args:
-            docs (list[Document]): Documents to embed and store.
-        Returns:
-            vector store instance or None
+
+        :param docs: Documents to embed and store (dicts with 'page_content' and 'meta').
+        :returns: Vector store instance or None.
         """
         if self.vector_store is None:
             raise RuntimeError("Vector store not initialized")
         return self.vector_store.store_embeddings(docs)
 
-    def retrieve(self, query, k=2, threshold=0.0, similarity_threshold=False):
+    def retrieve(
+        self,
+        query: str,
+        k: int = 2,
+        threshold: float = 0.0,
+        similarity_threshold: bool = False,
+    ) -> List[Any]:
         """
         Retrieve most similar documents to the given query.
-        Args:
-            query (str): Text query.
-            k (int): Number of results.
-            threshold (float): Optional similarity threshold.
-            similarity_threshold (bool): Use threshold or not.
-        Returns:
-            list[Document]
+
+        :param query: Text query for similarity search.
+        :param k: Number of results to return.
+        :param threshold: Optional similarity threshold.
+        :param similarity_threshold: Whether to use threshold filtering.
+        :returns: List of Document objects.
         """
         if self.vector_store is None:
             raise RuntimeError("Vector store not initialized")
         return self.vector_store.retrieve(query, k, threshold, similarity_threshold)
     
-    def run_custom_query(self, sql):
+    def run_custom_query(self, sql: str) -> List[Any]:
         """
-        Execute a custom SQL query, if supported by the backend.
-        Args:
-            sql (str): SQL statement to execute (typically for Postgres).
-        Returns:
-            list[dict]: Query results.
+        Execute a custom SQL query (Postgres backend only).
+
+        :param sql: SQL statement to execute.
+        :returns: List of Document objects.
         """
         if self.vector_store is None:
             raise RuntimeError("Vector store not initialized")

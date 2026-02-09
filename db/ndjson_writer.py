@@ -1,21 +1,26 @@
+"""
+CARE — Codebase Analysis & Refactor Engine
+NDJSON Writer: converts flattened JSON arrays into line-delimited NDJSON.
+"""
+
 import json
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Callable, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
 
 class NDJSONWriter:
     """
-    Utility class to convert a flattened JSON file into a proper NDJSON file.
+    Converts a flattened JSON file into a proper NDJSON file.
 
-    It supports two input formats:
-      1) A single JSON array: [ {...}, {...}, ... ]
+    Supports two input formats:
+      1) A single JSON array: ``[ {...}, {...}, ... ]``
       2) One JSON object per line (JSON-per-line / pseudo-NDJSON)
 
     Output:
-      - True NDJSON: one JSON object per line, each line valid JSON.
+      True NDJSON — one JSON object per line, each line valid JSON.
     """
 
     def __init__(

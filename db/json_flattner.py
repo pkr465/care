@@ -1,6 +1,14 @@
+"""
+CARE — Codebase Analysis & Refactor Engine
+JSON Flattener: transforms healthreport.json into embedding-friendly records.
+"""
+
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 
 class JsonFlattener:
@@ -532,6 +540,59 @@ class JsonFlattener:
                     "type": edge.get("type"),
                 }
                 self._add_record_if_valid(records, rec)
+
+        # --------------------------------------------------------------
+        # 14) Deep static adapter results (from adapters section)
+        # --------------------------------------------------------------
+        adapters: Dict[str, Any] = data.get("adapters", {}) or {}
+        if not adapters:
+            # Also check inside health_metrics for adapter results
+            adapters = health_metrics.get("adapters", {}) or {}
+
+        for adapter_name, adapter_data in adapters.items():
+            if not isinstance(adapter_data, dict):
+                continue
+
+            # Adapter-level summary record
+            adapter_summary: Dict[str, Any] = {
+                "record_type": "adapter_summary",
+                "id": f"adapter::{adapter_name}",
+                "source": "healthreport.json",
+                "adapter_name": adapter_name,
+                "score": adapter_data.get("score"),
+                "grade": adapter_data.get("grade"),
+                "tool_available": adapter_data.get("tool_available"),
+                "metrics": adapter_data.get("metrics"),
+                "issues": adapter_data.get("issues"),
+            }
+            self._add_record_if_valid(records, adapter_summary)
+
+            # Per-finding detail records
+            details = adapter_data.get("details") or []
+            if isinstance(details, list):
+                for idx, detail in enumerate(details):
+                    if not isinstance(detail, dict):
+                        continue
+                    rec = {
+                        "record_type": "adapter_finding",
+                        "id": f"adapter_finding::{adapter_name}::{idx}",
+                        "source": "healthreport.json",
+                        "adapter_name": adapter_name,
+                        "file_path": detail.get("file"),
+                        "function": detail.get("function"),
+                        "line": detail.get("line"),
+                        "description": detail.get("description"),
+                        "severity": detail.get("severity"),
+                        "category": detail.get("category"),
+                        "cwe": detail.get("cwe"),
+                    }
+                    self._add_record_if_valid(records, rec)
+
+        logger.info(
+            "Flattened %d records from healthreport (incl. %d adapter entries)",
+            len(records),
+            sum(1 for r in records if r.get("record_type", "").startswith("adapter_")),
+        )
 
         # --------------------------------------------------------------
         # Write output as NDJSON if requested

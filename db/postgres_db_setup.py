@@ -1,16 +1,52 @@
+"""
+PostgreSQL Database Setup Utility
+
+CARE — Codebase Analysis & Refactor Engine
+
+Safe and Idempotent PostgreSQL Database and Schema Setup Utility:
+- Ensures user/role exists (creates if missing)
+- Ensures database exists (creates if missing) and owned properly
+- Enables pgvector
+- Creates required tables for vector/document storage (if missing)
+- Never drops or overwrites existing tables/data
+"""
+
+import logging
+from typing import Optional, Union
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-from utils.parsers.env_parser import EnvConfig
 from psycopg2 import sql
 
-def create_role_if_not_exists(conn, target_user, target_password, createdb=False):
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Import GlobalConfig with fallback to EnvConfig
+try:
+    from utils.parsers.global_config_parser import GlobalConfig
+except ImportError:
+    GlobalConfig = None
+from utils.parsers.env_parser import EnvConfig
+
+
+def create_role_if_not_exists(
+    conn: psycopg2.extensions.connection,
+    target_user: str,
+    target_password: str,
+    createdb: bool = False
+) -> None:
     """
     Checks and creates a PostgreSQL role if it does not exist.
+
+    Args:
+        conn: PostgreSQL connection object.
+        target_user: The username/role name to create.
+        target_password: The password for the role.
+        createdb: Whether to grant CREATEDB privilege.
     """
     with conn.cursor() as cur:
         cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s;", (target_user,))
         if not cur.fetchone():
-            print(f"Creating role/user '{target_user}' ...")
+            logger.info(f"Creating role/user '{target_user}' ...")
             query = sql.SQL(
                 "CREATE USER {role} WITH PASSWORD %s {createdb}"
             ).format(
@@ -18,65 +54,105 @@ def create_role_if_not_exists(conn, target_user, target_password, createdb=False
                 createdb=sql.SQL("CREATEDB") if createdb else sql.SQL("")
             )
             cur.execute(query, [target_password])
-            print(f"Role/user '{target_user}' created.")
+            logger.info(f"Role/user '{target_user}' created.")
         else:
-            print(f"Role/user '{target_user}' already exists.")
+            logger.debug(f"Role/user '{target_user}' already exists.")
+
 
 class PostgresDbSetup:
     """
     Safe and Idempotent PostgreSQL Database and Schema Setup Utility
 
-    - Ensures user/role exists (creates if missing)
-    - Ensures database exists (creates if missing) and owned properly
-    - Enables pgvector
-    - Creates required tables for vector/document storage (if missing)
-    - Never drops or overwrites existing tables/data
+    Supports configuration via GlobalConfig or EnvConfig with automatic fallback.
     """
-    def __init__(self, environment=None):
-        # Load or validate environment
-        self.env = environment if environment is not None else EnvConfig()
 
-        # Try to get 'admin'/superuser credentials for setup, fallback to 'postgres'
-        self.admin_user = self.env.get('POSTGRES_ADMIN_USERNAME', 'codebase_analytics_pg')
-        self.admin_password = self.env.get('POSTGRES_ADMIN_PASSWORD', 'codebase_analytics_pg')
+    def __init__(
+        self,
+        environment: Optional[Union["GlobalConfig", EnvConfig]] = None
+    ) -> None:
+        """
+        Initialize PostgreSQL database setup with configuration.
 
-        self.username = self.env.get('POSTGRES_USERNAME')
-        self.password = self.env.get('POSTGRES_PASSWORD')
-        self.database = self.env.get('POSTGRES_DATABASE')
-        self.host = self.env.get('POSTGRES_HOST', 'localhost')
-        self.port = self.env.get('POSTGRES_PORT', 5432)
-        self.collection_table = self.env.get('POSTGRES_COLLECTION_TABLENAME')
-        self.embedding_table = self.env.get('POSTGRES_EMBEDDING_TABLENAME')
+        Args:
+            environment: Configuration object (GlobalConfig, EnvConfig, or None).
+                        If None, attempts GlobalConfig first, then falls back to EnvConfig.
+        """
+        # Load or validate environment with GlobalConfig fallback
+        if environment is not None:
+            self.env = environment
+        else:
+            # Try GlobalConfig first, fall back to EnvConfig
+            if GlobalConfig is not None:
+                try:
+                    self.env = GlobalConfig()
+                    logger.debug("Using GlobalConfig for environment configuration")
+                except Exception as e:
+                    logger.debug(
+                        f"GlobalConfig initialization failed ({e}), falling back to EnvConfig"
+                    )
+                    self.env = EnvConfig()
+            else:
+                self.env = EnvConfig()
+                logger.debug("Using EnvConfig for environment configuration")
 
-    def create_db_if_not_exists(self, conn):
+        # Try to get 'admin'/superuser credentials for setup
+        self.admin_user: str = self.env.get('POSTGRES_ADMIN_USERNAME', 'codebase_analytics_pg')
+        self.admin_password: str = self.env.get('POSTGRES_ADMIN_PASSWORD', 'codebase_analytics_pg')
+
+        self.username: str = self.env.get('POSTGRES_USERNAME')
+        self.password: str = self.env.get('POSTGRES_PASSWORD')
+        self.database: str = self.env.get('POSTGRES_DATABASE')
+        self.host: str = self.env.get('POSTGRES_HOST', 'localhost')
+        self.port: int = self.env.get('POSTGRES_PORT', 5432)
+        self.collection_table: str = self.env.get('POSTGRES_COLLECTION_TABLENAME')
+        self.embedding_table: str = self.env.get('POSTGRES_EMBEDDING_TABLENAME')
+
+    def create_db_if_not_exists(self, conn: psycopg2.extensions.connection) -> None:
+        """
+        Creates the PostgreSQL database if it does not already exist.
+
+        Args:
+            conn: PostgreSQL connection object (must be connected to 'postgres' DB).
+        """
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (self.database,))
             if not cur.fetchone():
-                print(f"Creating database '{self.database}' with owner '{self.username}' ...")
+                logger.info(f"Creating database '{self.database}' with owner '{self.username}' ...")
                 cur.execute(
                     sql.SQL("CREATE DATABASE {} OWNER {};").format(
                         sql.Identifier(self.database),
-                        sql.Identifier(self.username)))
-                print(f"Database '{self.database}' created.")
+                        sql.Identifier(self.username)
+                    )
+                )
+                logger.info(f"Database '{self.database}' created.")
             else:
-                print(f"Database '{self.database}' already exists.")
+                logger.debug(f"Database '{self.database}' already exists.")
 
-    def run_schema_setup(self, dbconn):
+    def run_schema_setup(self, dbconn: psycopg2.extensions.connection) -> None:
+        """
+        Sets up the database schema: enables pgvector and creates tables.
+
+        Args:
+            dbconn: PostgreSQL connection object (connected to the target database).
+        """
         # Enable pgvector extension (must be superuser)
         with dbconn.cursor() as cur:
             try:
                 cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-                print("pgvector extension enabled.")
+                logger.info("pgvector extension enabled.")
             except psycopg2.errors.InsufficientPrivilege:
-                print("WARNING: Not superuser, skipping CREATE EXTENSION vector. Please ensure it's installed by a superuser.")
+                logger.warning(
+                    "Not superuser, skipping CREATE EXTENSION vector. "
+                    "Please ensure it's installed by a superuser."
+                )
                 dbconn.rollback()
             except Exception as ex:
-                print(f"Could not create extension 'vector': {ex}")
+                logger.error(f"Could not create extension 'vector': {ex}")
                 dbconn.rollback()
 
         # Create tables if not exist
         with dbconn.cursor() as cur:
-            print(f"Creating table {self.collection_table} (if not exists)...")
+            logger.info(f"Creating table {self.collection_table} (if not exists)...")
             cur.execute(sql.SQL("""
                 CREATE TABLE IF NOT EXISTS {} (
                     uuid UUID PRIMARY KEY,
@@ -85,7 +161,7 @@ class PostgresDbSetup:
                 );
             """).format(sql.Identifier(self.collection_table)))
 
-            print(f"Creating table {self.embedding_table} (if not exists)...")
+            logger.info(f"Creating table {self.embedding_table} (if not exists)...")
             cur.execute(sql.SQL("""
                 CREATE TABLE IF NOT EXISTS {} (
                     id UUID PRIMARY KEY,
@@ -105,9 +181,16 @@ class PostgresDbSetup:
             # cur.execute(sql.SQL("CREATE INDEX IF NOT EXISTS idx_embedding_vector ON {} USING ivfflat (embedding);").format(sql.Identifier(self.embedding_table)))
             # cur.execute(sql.SQL("CREATE INDEX IF NOT EXISTS idx_collection_id ON {} (collection_id);").format(sql.Identifier(self.embedding_table)))
             dbconn.commit()
-            print("Vector schema/tables ready.")
+            logger.info("Vector schema/tables ready.")
 
-    def run(self):
+    def run(self) -> None:
+        """
+        Execute the complete database and schema setup process.
+
+        Steps:
+        1. Connect as admin to 'postgres' DB for role/database setup
+        2. Connect to user database for schema/extension setup
+        """
         # 1. Connect as admin to 'postgres' DB for role/database setup
         with psycopg2.connect(
             dbname='postgres',
@@ -128,7 +211,7 @@ class PostgresDbSetup:
                 # Ensure DB exists
                 self.create_db_if_not_exists(conn_admin)
             except Exception as ex:
-                print(f"Error during admin setup: {ex}")
+                logger.error(f"Error during admin setup: {ex}")
                 raise
 
         # 2. Connect to user database for schema/extension setup
@@ -142,9 +225,10 @@ class PostgresDbSetup:
             try:
                 self.run_schema_setup(conn_user)
             except Exception as ex:
-                print(f"Error during schema setup: {ex}")
+                logger.error(f"Error during schema setup: {ex}")
                 raise
-        print("All schema/database setup complete.")
+        logger.info("All schema/database setup complete.")
+
 
 if __name__ == "__main__":
     PostgresDbSetup().run()

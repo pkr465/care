@@ -1,4 +1,5 @@
--- Create application role/user for Codebase Analytics if it doesn't exist
+-- CARE — Codebase Analysis & Refactor Engine
+-- Create application role/user for CARE vector DB if it doesn't exist
 DO $$
 BEGIN
     IF NOT EXISTS (

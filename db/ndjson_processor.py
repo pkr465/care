@@ -1,3 +1,15 @@
+"""
+NDJSON Processor for Embedding-Ready Documents
+
+CARE — Codebase Analysis & Refactor Engine
+
+This module processes NDJSON files to generate embedding-ready documents with:
+  - Stable UUID generation based on configurable key combinations
+  - Flexible metadata extraction and preservation
+  - Rich page content construction from record fields
+  - Graceful handling of optional embedding dependencies
+"""
+
 import json
 import logging
 import hashlib
@@ -5,7 +17,21 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Iterable
 
-from qgenie.integrations.langchain import QGenieEmbeddings  # adjust import if needed
+# Gracefully handle optional QGenieEmbeddings dependency
+try:
+    from qgenie.integrations.langchain import QGenieEmbeddings
+    QGENIE_EMBEDDINGS_AVAILABLE = True
+except ImportError:
+    QGenieEmbeddings = None
+    QGENIE_EMBEDDINGS_AVAILABLE = False
+
+# Gracefully handle optional GlobalConfig dependency
+try:
+    from utils.parsers.global_config_parser import GlobalConfig
+    GLOBAL_CONFIG_AVAILABLE = True
+except ImportError:
+    GlobalConfig = None
+    GLOBAL_CONFIG_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -365,15 +391,56 @@ class NDJSONProcessor:
     @staticmethod
     def get_embedding_function(env_config: Optional[Dict[str, Any]] = None):
         """
-        Returns a QGenieEmbeddings instance configured from env_config,
+        Returns a QGenieEmbeddings instance configured from env_config or GlobalConfig,
         or raises if not available.
+
+        Configuration precedence:
+          1. Try GlobalConfig first (if available and configured)
+          2. Fall back to env_config parameters
+          3. Raise if neither QGenieEmbeddings is available nor config is sufficient
+
+        Args:
+            env_config: Optional dict with QGENIE_EMBEDDINGS_API_KEY and QGENIE_EMBEDDINGS_MODEL
+
+        Returns:
+            QGenieEmbeddings instance
+
+        Raises:
+            ImportError: If QGenieEmbeddings is not available
+            RuntimeError: If required configuration is missing
         """
+        if not QGENIE_EMBEDDINGS_AVAILABLE:
+            raise ImportError(
+                "QGenieEmbeddings is not available. "
+                "Please install qgenie: pip install qgenie"
+            )
+
         env_config = env_config or {}
-        api_key = env_config.get("QGENIE_EMBEDDINGS_API_KEY")
-        embed_model = env_config.get("QGENIE_EMBEDDINGS_MODEL") or "text-embedding-3-small"
+        api_key = None
+        embed_model = "text-embedding-3-small"
+
+        # Try GlobalConfig first if available
+        if GLOBAL_CONFIG_AVAILABLE and GlobalConfig:
+            try:
+                config = GlobalConfig()
+                api_key = config.get("QGENIE_EMBEDDINGS_API_KEY")
+                embed_model = config.get("QGENIE_EMBEDDINGS_MODEL") or embed_model
+                logger.debug("Using embedding config from GlobalConfig")
+            except Exception as e:
+                logger.debug(f"Could not load embedding config from GlobalConfig: {e}")
+
+        # Fall back to env_config if not found in GlobalConfig
+        if not api_key:
+            api_key = env_config.get("QGENIE_EMBEDDINGS_API_KEY")
+            embed_model = env_config.get("QGENIE_EMBEDDINGS_MODEL") or embed_model
+            if api_key:
+                logger.debug("Using embedding config from env_config")
 
         if not api_key:
-            raise RuntimeError("QGENIE_EMBEDDINGS_API_KEY is not configured in env_config")
+            raise RuntimeError(
+                "QGENIE_EMBEDDINGS_API_KEY is not configured. "
+                "Set it in GlobalConfig or pass via env_config parameter."
+            )
 
         return QGenieEmbeddings(
             api_key=api_key,

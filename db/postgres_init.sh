@@ -1,8 +1,7 @@
 #!/bin/bash
-# HAS NOT BEEN TESTED YET
-# Postgres/PGVector (these MAY CHANGE for each user or environment)
-# Postgres/PGVector (these MAY CHANGE for each user or environment)
-# Postgres/PGVector (these MAY CHANGE for each user or environment)
+# CARE — Codebase Analysis & Refactor Engine
+# PostgreSQL / PGVector initialisation script
+# Note: environment-specific values may need adjustment per deployment
 
 # SQLAlchemy-style connection string for the *app user* (used by your app)
 POSTGRES_CONNECTION=postgresql+psycopg2://codebase_analytics_user:postgres@localhost/codebase_analytics_db
@@ -46,11 +45,11 @@ DB_PASSWORD="postgres"
 psql -U "$DB_SUPERUSER" -tc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" | grep -q 1 || \
 psql -U "$DB_SUPERUSER" -c "CREATE ROLE $DB_USER WITH LOGIN SUPERUSER PASSWORD '$DB_PASSWORD';"
 
-# Create hws-dvt-db database if it doesn't exist
+# Create codebase_analytics_db database if it doesn't exist
 psql -U "$DB_SUPERUSER" -tc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" | grep -q 1 || \
 psql -U "$DB_SUPERUSER" -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;"
 
-# Run schema setup inside hws-dvt-db
+# Run schema setup inside codebase_analytics_db
 psql -U "$DB_SUPERUSER" -d "$DB_NAME" <<'EOF'
 
 -- Enable pgvector extension
