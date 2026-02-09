@@ -214,3 +214,20 @@ dependency_builder:
   log_output_truncation: 2000
   log_error_truncation: 1000
   virtual_snippet_filename: "__snippet__.cpp"
+
+# ────────────────────────────────────────────────────────────────────────────
+# HITL (Human-in-the-Loop) — Persistent feedback store and RAG-based constraint
+# injection. Enable via --enable-hitl CLI flag.
+# ────────────────────────────────────────────────────────────────────────────
+hitl:
+  enable: false
+  store_db_path: "${OUT_DIR}/hitl/feedback.db"
+  rag_top_k: 5
+  rag_similarity_threshold: 0.6
+  excel_analysis_sheet: "Analysis"
+  feedback_column: "Feedback"
+  constraints_column: "Constraints"
+  constraint_file_pattern: "**/*_constraints.md"
+  enable_prompt_augmentation: true
+  rag_context_max_tokens: 2000
+  auto_persist_feedback: true

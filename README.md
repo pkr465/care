@@ -73,9 +73,10 @@ All adapters inherit from `BaseStaticAdapter` and degrade gracefully when their 
 ├── global_config.yaml                  # Hierarchical YAML configuration
 ├── requirements.txt                    # Python dependencies
 ├── agents/
-│   ├── static_analyzer_agent.py        # Unified 7-phase static analyzer
+│   ├── codebase_static_agent.py        # Unified 7-phase static analyzer
 │   ├── codebase_llm_agent.py           # LLM-exclusive per-file code reviewer
-│   ├── codebase_fixer_agent.py         # Agentic code repair agent
+│   ├── codebase_fixer_agent.py         # Agentic code repair agent (source-aware, audit trail)
+│   ├── codebase_patch_agent.py         # Patch analysis agent (diff-based issue detection)
 │   ├── codebase_analysis_chat_agent.py # Interactive chat analysis agent
 │   ├── adapters/                       # Deep static analysis adapters
 │   │   ├── base_adapter.py             #   ABC base class
@@ -131,6 +132,16 @@ All adapters inherit from `BaseStaticAdapter` and degrade gracefully when their 
 │   ├── lsp_notification_handlers.py    # CCLS LSP notification handlers
 │   ├── exceptions.py                   # Custom exceptions
 │   └── utils.py                        # Shared utilities
+├── hitl/                               # Human-in-the-Loop RAG pipeline
+│   ├── __init__.py                     # Module exports, HITL_AVAILABLE flag
+│   ├── config.py                       # HITLConfig dataclass
+│   ├── schemas.py                      # Data models (FeedbackDecision, ConstraintRule)
+│   ├── feedback_store.py               # SQLite persistent store
+│   ├── excel_feedback_parser.py        # Parse Excel human feedback
+│   ├── constraint_parser.py            # Parse *_constraints.md files
+│   ├── rag_retriever.py                # RAG query engine
+│   ├── hitl_context.py                 # Unified agent interface (HITLContext)
+│   └── prompts.py                      # RAG-augmented prompt templates
 ├── utils/
 │   ├── common/
 │   │   ├── llm_tools.py                # Multi-provider LLM abstraction
@@ -306,9 +317,26 @@ cp env.example .env
 | `--force-reanalysis` | Force re-analysis ignoring cached results |
 | `--memory-limit MB` | Memory limit in MB (default: 3000) |
 | `--enable-memory-monitoring` | Enable real-time memory monitoring (default: on) |
+| `--patch-file PATH` | Path to `.patch`/`.diff` file for patch analysis |
+| `--patch-target PATH` | Path to the original source file being patched |
+| `--enable-hitl` | Enable Human-in-the-Loop RAG feedback system | `false` |
+| `--hitl-feedback-excel` | Path to `detailed_code_review.xlsx` with human feedback | `None` |
+| `--hitl-constraints-dir` | Directory to search for `*_constraints.md` files | `None` |
+| `--hitl-store-path` | Path to HITL feedback store (SQLite database) | `./out/hitl/feedback.db` |
 | `-v, --verbose` | Verbose logging |
 | `-D, --debug` | Debug logging |
 | `--quiet` | Suppress non-error output |
+
+#### Fixer Workflow CLI (`fixer_workflow.py`)
+
+| Flag | Description |
+| :--- | :--- |
+| `--excel-file PATH` | Path to the reviewed Excel file (default: `out/detailed_code_review.xlsx`) |
+| `--codebase-path PATH` | Root directory of the source code |
+| `--out-dir DIR` | Directory for backups/intermediate files |
+| `--fix-source {all,llm,static,patch}` | Process only issues from: all, llm (Analysis sheet), static (static_* sheets), or patch (patch_* sheets) |
+| `--llm-model MODEL` | LLM model in `provider::model` format |
+| `--dry-run` | Simulate fixes without writing to disk |
 
 ### Standard Analysis (Health Report Pipeline)
 

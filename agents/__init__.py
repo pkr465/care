@@ -1,10 +1,24 @@
 """
-C/C++ Codebase Analysis Agents Package
+CARE — Codebase Analysis & Refactor Engine
+Agents Package
 
-Primary agent:
-    StaticAnalyzerAgent — Unified 7-phase pipeline for static analysis and health reporting.
+Primary agents:
+    StaticAnalyzerAgent  — Unified 7-phase pipeline for static analysis and health reporting.
+    CodebasePatchAgent   — Patch analysis agent (diff original vs patched, report new issues).
 """
 
-from .static_analyzer_agent import StaticAnalyzerAgent
+from .codebase_static_agent import StaticAnalyzerAgent
 
-__all__ = ['StaticAnalyzerAgent']
+# Patch agent (optional — no hard dependencies)
+try:
+    from .codebase_patch_agent import CodebasePatchAgent
+    PATCH_AGENT_AVAILABLE = True
+except ImportError:
+    CodebasePatchAgent = None
+    PATCH_AGENT_AVAILABLE = False
+
+__all__ = [
+    'StaticAnalyzerAgent',
+    'CodebasePatchAgent',
+    'PATCH_AGENT_AVAILABLE',
+]

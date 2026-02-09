@@ -119,6 +119,13 @@ except ImportError:
     PSUTIL_AVAILABLE = False
     logger.warning("psutil not available for memory monitoring")
 
+# HITL support (optional)
+try:
+    from hitl import HITLContext, HITL_AVAILABLE
+except ImportError:
+    HITLContext = None
+    HITL_AVAILABLE = False
+
 
 # ============================================================================
 # STATIC ANALYZER AGENT
@@ -154,6 +161,7 @@ class StaticAnalyzerAgent:
         enable_llm: bool = True,
         enable_adapters: bool = False,
         verbose: bool = False,
+        hitl_context: Optional['HITLContext'] = None,
     ):
         """
         Initialize the unified static analyzer agent.
@@ -264,6 +272,9 @@ class StaticAnalyzerAgent:
                 self.console = rich.console.Console()
             except Exception as e:
                 logger.warning(f"Failed to initialize Rich console: {e}")
+
+        # HITL context
+        self.hitl_context = hitl_context
 
         # State containers
         self.file_cache: List[Dict[str, Any]] = []
@@ -459,6 +470,26 @@ class StaticAnalyzerAgent:
             self.health_metrics = self.metrics_calculator.calculate_all_metrics(
                 self.file_cache, self.dependency_graph
             )
+
+            # ── HITL: filter adapter results based on human feedback ─
+            if self.hitl_context and self.health_metrics:
+                adapters = self.health_metrics.get("adapters", {})
+                for adapter_name, adapter_data in adapters.items():
+                    if isinstance(adapter_data, dict) and "details" in adapter_data:
+                        original_count = len(adapter_data["details"])
+                        adapter_data["details"] = [
+                            d for d in adapter_data["details"]
+                            if not self.hitl_context.should_skip_issue(
+                                d.get("category", adapter_name),
+                                d.get("file", ""),
+                            )
+                        ]
+                        filtered = original_count - len(adapter_data["details"])
+                        if filtered > 0:
+                            logger.info(
+                                "HITL: filtered %d issues from %s adapter",
+                                filtered, adapter_name,
+                            )
 
             if self.verbose and self.console:
                 overall = self.health_metrics.get("overall_health", {})
@@ -669,6 +700,13 @@ class StaticAnalyzerAgent:
                 try:
                     metrics_summary = self._prepare_metrics_summary_for_llm(self.health_metrics)
                     prompt = pt.get_health_metrics_analysis_prompt(metrics_summary)
+                    if self.hitl_context:
+                        prompt = self.hitl_context.augment_prompt(
+                            original_prompt=prompt,
+                            issue_type="health_metrics",
+                            file_path=str(self.codebase_path),
+                            agent_type="static_analyzer",
+                        )
                     response = self.llm_tools.llm_call(prompt)
                     enrichment["health_metrics_analysis"] = self._extract_json_from_response(response)
                     if self.verbose and self.console:
@@ -1094,7 +1132,7 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python static_analyzer_agent.py <codebase_path> [output_dir]")
+        print("Usage: python codebase_static_agent.py <codebase_path> [output_dir]")
         sys.exit(1)
 
     codebase = sys.argv[1]

@@ -33,6 +33,13 @@ try:
 except ImportError:
     CODEBASE_ANALYSIS_PROMPT = "Error: Prompt file not found."
 
+# HITL support (optional)
+try:
+    from hitl import HITLContext, HITL_AVAILABLE
+except ImportError:
+    HITLContext = None
+    HITL_AVAILABLE = False
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -71,6 +78,7 @@ class CodebaseLLMAgent:
         config: Optional[GlobalConfig] = None,
         llm_tools: Optional[LLMTools] = None,
         dep_config: Optional[DependencyBuilderConfig] = None,
+        hitl_context: Optional['HITLContext'] = None,
     ):
         """
         Initialize CodebaseLLMAgent with dependency injection support.
@@ -84,6 +92,7 @@ class CodebaseLLMAgent:
         :param config: Optional GlobalConfig for configuration management.
         :param llm_tools: Optional pre-configured LLMTools (for multi-agent sharing).
         :param dep_config: Optional DependencyBuilderConfig for dependency services.
+        :param hitl_context: Optional HITLContext for human-in-the-loop feedback integration.
         """
         self.config = config or GlobalConfig()
         self.codebase_path = Path(codebase_path).resolve()
@@ -146,6 +155,7 @@ class CodebaseLLMAgent:
             self.dep_service = None
 
         self.is_indexed = False
+        self.hitl_context = hitl_context
 
     def run_analysis(
         self,
@@ -309,6 +319,12 @@ class CodebaseLLMAgent:
                 if total_chunks > 1:
                     logger.info(f"    > Processing Chunk {chunk_idx + 1}/{total_chunks} (Lines {start_line}-{end_line})...")
 
+                # ── HITL: check if this issue should be skipped ─────────
+                if self.hitl_context:
+                    if self.hitl_context.should_skip_issue("code_quality", rel_path):
+                        logger.debug("HITL: skipping %s (marked skip in feedback)", rel_path)
+                        continue
+
                 # 4. LLM Call
                 final_prompt = f"""
                 {CODEBASE_ANALYSIS_PROMPT}
@@ -318,6 +334,15 @@ class CodebaseLLMAgent:
                 {final_chunk_text}
                 ```
                 """
+
+                # ── HITL: augment prompt with feedback context ──────────
+                if self.hitl_context:
+                    final_prompt = self.hitl_context.augment_prompt(
+                        original_prompt=final_prompt,
+                        issue_type="code_quality",
+                        file_path=rel_path,
+                        agent_type="llm_agent",
+                    )
 
                 response = self.llm_tools.llm_call(final_prompt)
 
@@ -332,6 +357,18 @@ class CodebaseLLMAgent:
 
                 if parsed_issues:
                     self.results.extend(parsed_issues)
+
+                    # ── HITL: record decisions for future runs ──────────────
+                    if self.hitl_context:
+                        for result in parsed_issues:
+                            self.hitl_context.record_agent_decision(
+                                agent_name="CodebaseLLMAgent",
+                                issue_type=result.get("Category", "code_quality"),
+                                file_path=result.get("File", ""),
+                                decision="FIX",
+                                code_snippet=result.get("Code", ""),
+                                severity=result.get("Severity", "medium"),
+                            )
 
         except Exception as e:
             raise e

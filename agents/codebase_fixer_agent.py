@@ -53,6 +53,15 @@ try:
 except ImportError:
     GlobalConfig = None
 
+# -------------------------------------------------------------------------
+# HITL SUPPORT (OPTIONAL)
+# -------------------------------------------------------------------------
+try:
+    from hitl import HITLContext, HITL_AVAILABLE
+except ImportError:
+    HITLContext = None
+    HITL_AVAILABLE = False
+
 
 class CodebaseFixerAgent:
     """
@@ -82,7 +91,8 @@ class CodebaseFixerAgent:
         llm_tools: Optional[LLMTools] = None,
         dep_config: Optional['DependencyBuilderConfig'] = None,
         dry_run: bool = False,
-        verbose: bool = False
+        verbose: bool = False,
+        hitl_context: Optional['HITLContext'] = None,
     ):
         self.codebase_root = Path(codebase_root).resolve()
         self.directives_path = Path(directives_file).resolve()
@@ -95,6 +105,10 @@ class CodebaseFixerAgent:
         self.config = config
         self.dry_run = dry_run
         self.verbose = verbose
+        self.hitl_context = hitl_context
+
+        # Audit trail for detailed tracking of every decision
+        self.audit_trail: List[Dict] = []
 
         # Setup Logging
         logging.basicConfig(
@@ -203,6 +217,7 @@ class CodebaseFixerAgent:
                 self.logger.warning(f"    [!] File not found: {file_path}")
                 for t in tasks:
                     results.append({**t, "final_status": "FILE_NOT_FOUND"})
+                    self._audit_decision(t, "FILE_NOT_FOUND", f"File not found: {file_path}")
                 continue
 
             active_tasks = [t for t in tasks if t.get('action') != 'SKIP']
@@ -210,6 +225,7 @@ class CodebaseFixerAgent:
 
             for t in skipped_tasks:
                 results.append({**t, "final_status": "SKIPPED"})
+                self._audit_decision(t, "SKIPPED", "Directive action is SKIP")
 
             if not active_tasks:
                 self.logger.info("    -> No active tasks for this file.")
@@ -241,6 +257,7 @@ class CodebaseFixerAgent:
                 self.logger.error(f"Failed to refactor {file_path.name}: {e}")
                 for t in active_tasks:
                     results.append({**t, "final_status": "LLM_FAIL", "details": str(e)})
+                    self._audit_decision(t, "LLM_FAIL", str(e))
 
         report_path = self._save_report(results, report_filename)
 
@@ -280,6 +297,23 @@ class CodebaseFixerAgent:
                     task_line = int(task.get('line_number', 0))
                     # Allow fuzzy matching (+/- 5 lines) for fixes as line numbers might drift slightly
                     if (start_line - 5) <= task_line <= (end_line + 5):
+                        source_type = task.get("source_type", "unknown")
+
+                        # ── HITL: check if this issue should be skipped ─────────
+                        if self.hitl_context:
+                            issue_type = task.get("issue_type", "")
+                            file_path = task.get("file_path", "")
+                            if self.hitl_context.should_skip_issue(issue_type, file_path):
+                                self.logger.info(
+                                    "HITL: skipping %s in %s (source=%s, marked skip in feedback)",
+                                    issue_type, file_path, source_type,
+                                )
+                                task["action"] = "SKIP"
+                                self._audit_decision(
+                                    task, "SKIPPED_HITL",
+                                    f"HITL feedback says skip {issue_type}",
+                                )
+                                continue
                         chunk_tasks.append(task)
                 except ValueError:
                     continue
@@ -327,6 +361,19 @@ class CodebaseFixerAgent:
 
                         for t in chunk_tasks:
                             processed_results.append({**t, "final_status": "FIXED", "details": f"Fixed in Chunk {i+1}"})
+                            self._audit_decision(
+                                t, "FIXED",
+                                f"Fixed in chunk {i+1} ({duration}s)",
+                            )
+                            # ── HITL: record the decision ──────────────────────
+                            if self.hitl_context:
+                                self.hitl_context.record_agent_decision(
+                                    agent_name="CodebaseFixerAgent",
+                                    issue_type=t.get("issue_type", ""),
+                                    file_path=t.get("file_path", ""),
+                                    decision="FIX",
+                                    code_snippet=t.get("bad_code_snippet", ""),
+                                )
                         prev_chunk_tail = self._get_tail_context(fixed_chunk)
                 else:
                     self.logger.warning(f"Failed (Empty Response).")
@@ -451,16 +498,36 @@ class CodebaseFixerAgent:
         return text
 
     def _construct_refactor_prompt(self, filename: str, content: str, issues: List[Dict], preceding_context: str, dependency_context: str) -> str:
-        """Construct a detailed refactoring prompt for the LLM."""
+        """Construct a detailed refactoring prompt for the LLM.
+
+        Includes source-type-specific guidance, human feedback, and
+        HITL constraint injection for maximum fix quality.
+        """
         issues_text = ""
         for i, issue in enumerate(issues, 1):
+            source_type = issue.get("source_type", "unknown")
+            source_label = {
+                "llm": "LLM Code Review",
+                "static": "Static Analysis Tool",
+                "patch": "Patch Analysis",
+            }.get(source_type, "Unknown Source")
+
+            human_feedback = issue.get("human_feedback", "")
+            human_constraints = issue.get("human_constraints", "")
+
             issues_text += (
-                f"--- ISSUE #{i} ---\n"
+                f"--- ISSUE #{i} (Source: {source_label}) ---\n"
                 f"Location: Line {issue.get('line_number')}\n"
-                f"Problem: {issue.get('rationale')}\n"
+                f"Severity: {issue.get('severity', 'medium')}\n"
+                f"Category: {issue.get('issue_type', '')}\n"
+                f"Problem: {issue.get('rationale') or issue.get('description') or issue.get('bad_code_snippet', '')}\n"
                 f"Suggested Fix: {issue.get('suggested_fix')}\n"
-                f"Constraint: {issue.get('constraints', 'None')}\n\n"
             )
+            if human_feedback:
+                issues_text += f"Human Reviewer Feedback: {human_feedback}\n"
+            if human_constraints:
+                issues_text += f"Human Constraints: {human_constraints}\n"
+            issues_text += "\n"
 
         context_section = ""
         if preceding_context:
@@ -478,11 +545,49 @@ class CodebaseFixerAgent:
                 f"{dependency_context}\n\n"
             )
 
+        # ── HITL: inject constraints into fix prompt ────────────
+        hitl_constraints_section = ""
+        if self.hitl_context:
+            hitl_ctx = self.hitl_context.get_augmented_context(
+                issue_type=issues[0].get("issue_type", "") if issues else "",
+                file_path=issues[0].get("file_path", "") if issues else "",
+                agent_type="fixer_agent",
+            )
+            if hitl_ctx.applicable_constraints:
+                hitl_constraints_section += "\n--- HITL CONSTRAINTS (MUST FOLLOW) ---\n"
+                for c in hitl_ctx.applicable_constraints:
+                    hitl_constraints_section += f"Rule {c.rule_id}:\n"
+                    if c.description:
+                        hitl_constraints_section += f"  Description: {c.description}\n"
+                    if c.standard_remediation:
+                        hitl_constraints_section += f"  Standard Fix: {c.standard_remediation}\n"
+                    hitl_constraints_section += f"  REQUIRED Action: {c.llm_action}\n"
+                    if c.reasoning:
+                        hitl_constraints_section += f"  Reasoning: {c.reasoning}\n"
+                    hitl_constraints_section += "\n"
+
+            if hitl_ctx.relevant_feedback:
+                hitl_constraints_section += "--- PAST REVIEWER DECISIONS ---\n"
+                for fb in hitl_ctx.relevant_feedback[:3]:
+                    hitl_constraints_section += (
+                        f"  File: {fb.file_path}, Action: {fb.human_action}"
+                    )
+                    if fb.human_feedback_text:
+                        hitl_constraints_section += f", Feedback: \"{fb.human_feedback_text}\""
+                    hitl_constraints_section += "\n"
+                hitl_constraints_section += "\n"
+
+            if hitl_ctx.suggestions_from_history:
+                suggestions_text = "\n".join(
+                    f"- {s}" for s in hitl_ctx.suggestions_from_history
+                )
+                hitl_constraints_section += f"--- PAST SUGGESTIONS ---\n{suggestions_text}\n\n"
+
         return f"""
             You are a Secure C++ Refactoring Agent.
             Fix the reported issues in the "CODE FRAGMENT TO FIX" below.
 
-            {context_section}
+            {context_section}{hitl_constraints_section}
 
             --- ISSUES TO RESOLVE ---
             {issues_text}
@@ -594,6 +699,20 @@ class CodebaseFixerAgent:
             writer = ExcelWriter(output_path)
             writer.add_data_sheet(summary_metadata, "Summary", "Codebase Fixer Execution Report")
             writer.add_table_sheet(available_columns, results, "Audit Log", status_column="final_status")
+
+            # Add audit trail sheet if there are entries
+            if self.audit_trail:
+                audit_columns = [
+                    "timestamp", "file_path", "line_number", "issue_type",
+                    "severity", "source_type", "source_sheet", "action",
+                    "final_status", "hitl_constraints", "human_feedback",
+                    "details",
+                ]
+                writer.add_table_sheet(
+                    audit_columns, self.audit_trail,
+                    "Decision Trail", status_column="final_status",
+                )
+
             writer.save()
 
             self.logger.info(f"Report saved to: {output_path}")
@@ -691,5 +810,54 @@ class CodebaseFixerAgent:
             "project": str(self.codebase_root),
             "start_time": self.start_time.isoformat(),
             "dry_run": self.dry_run,
-            "output_dir": self.output_dir
+            "output_dir": self.output_dir,
+            "audit_trail": self.audit_trail,
         }
+
+    # ------------------------------------------------------------------
+    # Audit trail
+    # ------------------------------------------------------------------
+
+    def _audit_decision(
+        self,
+        task: Dict,
+        final_status: str,
+        details: str = "",
+    ) -> None:
+        """Record an audit entry for a processed task.
+
+        Each entry captures: timestamp, file, line, issue_type,
+        source_type, action, final_status, hitl_constraints, and
+        free-form details.
+        """
+        hitl_constraints = ""
+        if self.hitl_context:
+            try:
+                ctx = self.hitl_context.get_augmented_context(
+                    issue_type=task.get("issue_type", ""),
+                    file_path=task.get("file_path", ""),
+                    agent_type="fixer_agent",
+                )
+                if ctx.applicable_constraints:
+                    hitl_constraints = "; ".join(
+                        f"{c.rule_id}: {c.llm_action}"
+                        for c in ctx.applicable_constraints
+                    )
+            except Exception:
+                pass
+
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "file_path": task.get("file_path", ""),
+            "line_number": task.get("line_number", 0),
+            "issue_type": task.get("issue_type", ""),
+            "severity": task.get("severity", ""),
+            "source_type": task.get("source_type", "unknown"),
+            "source_sheet": task.get("source_sheet", ""),
+            "action": task.get("action", "FIX"),
+            "final_status": final_status,
+            "hitl_constraints": hitl_constraints,
+            "human_feedback": task.get("human_feedback", ""),
+            "details": details,
+        }
+        self.audit_trail.append(entry)

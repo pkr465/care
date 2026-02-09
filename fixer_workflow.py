@@ -94,21 +94,29 @@ class HumanInTheLoopWorkflow:
         """
         Step 1: Parse the Excel review file and generate agent directives.
 
+        Passes ``--fix-source`` filter to the parser so only issues from the
+        selected source type(s) are included in the JSONL output.
+
         Returns:
             bool: True if successful, False otherwise
         """
+        fix_source = getattr(self.args, "fix_source", "all")
         print(f"\n[Step 1/2] Parsing Human Review: {self.excel_path.name}")
+        print(f"    Fix source filter: {fix_source}")
 
         try:
             parser = ExcelToAgentParser(str(self.excel_path))
-            # Generate the JSONL intermediate file
-            parser.generate_agent_directives(str(self.directives_jsonl))
+            # Generate the JSONL intermediate file with source filtering
+            directive_count = parser.generate_agent_directives(
+                str(self.directives_jsonl),
+                fix_source=fix_source,
+            )
 
-            if not self.directives_jsonl.exists():
-                print("    [!] Error: JSONL file was not created.")
+            if not self.directives_jsonl.exists() or directive_count == 0:
+                print("    [!] Error: JSONL file was not created or contains no directives.")
                 return False
 
-            print(f"    [OK] Directives generated: {self.directives_jsonl}")
+            print(f"    [OK] Directives generated: {self.directives_jsonl} ({directive_count} directives)")
             return True
         except Exception as e:
             print(f"    [!] Exception during parsing: {e}")
@@ -126,8 +134,10 @@ class HumanInTheLoopWorkflow:
         - Falls back to global_config.yaml llm.model setting
         - Uses default LLMTools() if neither is specified
         """
+        fix_source = getattr(self.args, "fix_source", "all")
         print(f"\n[Step 2/2] Launching Fixer Agent")
         print(f"    Target Codebase: {self.codebase_root}")
+        print(f"    Source Filter: {fix_source}")
 
         # Resolve LLM model from CLI arg or GlobalConfig
         llm_model = self.args.llm_model
@@ -217,6 +227,16 @@ if __name__ == "__main__":
         "--config-file",
         default=None,
         help="Path to custom global_config.yaml file (overrides default)"
+    )
+
+    # --- Source Filtering ---
+    parser.add_argument(
+        "--fix-source",
+        choices=["all", "llm", "static", "patch"],
+        default="all",
+        help="Process only issues from a specific source: "
+             "all (every sheet), llm (Analysis sheet), "
+             "static (static_* sheets), patch (patch_* sheets)"
     )
 
     # --- LLM Configuration ---

@@ -208,3 +208,5 @@ __marimo__/
 ~$enie_Design_Document.docx
 QGenie_Design_Document.docx
 QGenie_Issues_ToFix.docx
+agent_directives.jsonl
+agents/.DS_Store

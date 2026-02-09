@@ -63,6 +63,14 @@ except ImportError as e:
     LLM_TOOLS_AVAILABLE = False
     console.print(f"[yellow]Warning: LLMTools not available: {e}[/yellow]")
 
+# HITL support (optional)
+try:
+    from hitl import HITLContext, HITLConfig, HITL_AVAILABLE
+except ImportError:
+    HITLContext = None
+    HITLConfig = None
+    HITL_AVAILABLE = False
+
 # New flattening & NDJSON tooling
 try:
     from db.json_flattner import JsonFlattener
@@ -76,7 +84,7 @@ except ImportError as e:
 
 # Unified Static Analyzer Agent (Health Report focus)
 try:
-    from agents.static_analyzer_agent import StaticAnalyzerAgent
+    from agents.codebase_static_agent import StaticAnalyzerAgent
     STATIC_ANALYZER_AVAILABLE = True
 except ImportError as e:
     STATIC_ANALYZER_AVAILABLE = False
@@ -89,6 +97,14 @@ try:
 except ImportError as e:
     LLM_EXCLUSIVE_AGENT_AVAILABLE = False
     console.print(f"[yellow]Warning: CodebaseLLMAgent not available: {e}[/yellow]")
+
+# Patch Analysis Agent
+try:
+    from agents.codebase_patch_agent import CodebasePatchAgent
+    PATCH_AGENT_AVAILABLE = True
+except ImportError:
+    PATCH_AGENT_AVAILABLE = False
+    CodebasePatchAgent = None
 
 # Deep static analysis adapters (Lizard, Flawfinder, CCLS)
 try:
@@ -261,6 +277,18 @@ Examples:
         help="Specific file to analyze (relative to codebase path), used with --llm-exclusive",
     )
 
+    # Patch analysis mode
+    parser.add_argument(
+        "--patch-file",
+        default=None,
+        help="Path to a .patch/.diff file for patch analysis (unified diff format)",
+    )
+    parser.add_argument(
+        "--patch-target",
+        default=None,
+        help="Path to the original source file being patched (used with --patch-file)",
+    )
+
     parser.add_argument(
         "--use-incremental",
         action="store_true",
@@ -343,6 +371,30 @@ Examples:
         action="store_true",
         default=False,
         help="Generate HTML healthreport.html from healthreport.json in the output directory",
+    )
+
+    # ── HITL (Human-in-the-Loop) ────────────────────────────────────────
+    hitl_group = parser.add_argument_group("HITL (Human-in-the-Loop)")
+    hitl_group.add_argument(
+        "--enable-hitl",
+        action="store_true",
+        default=False,
+        help="Enable Human-in-the-Loop RAG feedback system",
+    )
+    hitl_group.add_argument(
+        "--hitl-feedback-excel",
+        default=None,
+        help="Path to detailed_code_review.xlsx with human feedback",
+    )
+    hitl_group.add_argument(
+        "--hitl-constraints-dir",
+        default=None,
+        help="Directory to search for *_constraints.md files",
+    )
+    hitl_group.add_argument(
+        "--hitl-store-path",
+        default="./out/hitl/feedback.db",
+        help="Path to HITL feedback store (SQLite database)",
     )
 
     # Output file paths
@@ -467,7 +519,7 @@ def codebase_analysis_agent(state: Dict[str, Any]) -> Dict[str, Any]:
     try:
         # Unified StaticAnalyzerAgent
         if not STATIC_ANALYZER_AVAILABLE:
-            raise RuntimeError("StaticAnalyzerAgent not available — check agents/static_analyzer_agent.py")
+            raise RuntimeError("StaticAnalyzerAgent not available — check agents/codebase_static_agent.py")
 
         use_llm = opts.get("use_llm", False)
         console.print(f"[blue]🔧 Using StaticAnalyzerAgent (LLM={'enabled' if use_llm else 'disabled'})[/blue]")
@@ -482,6 +534,29 @@ def codebase_analysis_agent(state: Dict[str, Any]) -> Dict[str, Any]:
                 console.print(f"[yellow]Warning: LLMTools init failed: {llm_err} — running without LLM[/yellow]")
                 use_llm = False
 
+        # ── HITL context initialization ─────────────────────────────────
+        hitl_context = None
+        if HITL_AVAILABLE and opts.get("enable_hitl"):
+            try:
+                hitl_config = HITLConfig(
+                    store_db_path=Path(opts.get("hitl_store_path", "./out/hitl/feedback.db")),
+                )
+                hitl_context = HITLContext(
+                    config=hitl_config,
+                    llm_tools=llm_tools if 'llm_tools' in dir() else None,
+                    feedback_excel_path=opts.get("hitl_feedback_excel"),
+                    constraints_dir=opts.get("hitl_constraints_dir"),
+                )
+                console.print("[green]✓ HITL context initialised[/green]")
+                stats = hitl_context.get_statistics()
+                console.print(
+                    f"  Feedback store: {stats['total_decisions']} decisions, "
+                    f"{stats['total_constraints']} constraints"
+                )
+            except Exception as exc:
+                console.print(f"[yellow]⚠ HITL initialisation failed: {exc}[/yellow]")
+                hitl_context = None
+
         agent = StaticAnalyzerAgent(
             codebase_path=codebase_path,
             output_dir=default_report_dir,
@@ -495,6 +570,7 @@ def codebase_analysis_agent(state: Dict[str, Any]) -> Dict[str, Any]:
             enable_llm=use_llm,
             enable_adapters=opts.get("enable_adapters", False),
             verbose=opts.get("verbose", False),
+            hitl_context=hitl_context,
         )
         results = agent.run_analysis()
 
@@ -1084,6 +1160,72 @@ def main():
             os.makedirs(opts["out_dir"], exist_ok=True)
 
         # ----------------------------------------------------
+        # PATCH ANALYSIS MODE
+        # ----------------------------------------------------
+        if opts.get("patch_file") and opts.get("patch_target"):
+            if not PATCH_AGENT_AVAILABLE:
+                console.print("[red]❌ CodebasePatchAgent not available. Check agents/codebase_patch_agent.py[/red]")
+                sys.exit(1)
+
+            console.print(f"[bold blue]🔍 Starting Patch Analysis[/bold blue]")
+            console.print(f"[blue]📄 Target file: {opts['patch_target']}[/blue]")
+            console.print(f"[blue]📋 Patch file:  {opts['patch_file']}[/blue]")
+
+            try:
+                # Build LLM tools
+                llm_model = opts.get("llm_model") or (global_config.get("llm.model") if global_config else None)
+                llm_tools = None
+                if LLM_TOOLS_AVAILABLE:
+                    try:
+                        llm_tools = LLMTools(model=llm_model) if llm_model else LLMTools()
+                    except Exception as llm_err:
+                        console.print(f"[yellow]Warning: LLMTools init failed: {llm_err}[/yellow]")
+
+                # HITL context
+                hitl_context = None
+                if HITL_AVAILABLE and opts.get("enable_hitl"):
+                    try:
+                        hitl_config = HITLConfig(
+                            store_db_path=Path(opts.get("hitl_store_path", "./out/hitl/feedback.db")),
+                        )
+                        hitl_context = HITLContext(
+                            config=hitl_config,
+                            llm_tools=llm_tools,
+                            feedback_excel_path=opts.get("hitl_feedback_excel"),
+                            constraints_dir=opts.get("hitl_constraints_dir"),
+                        )
+                        console.print("[green]✓ HITL context initialised[/green]")
+                    except Exception as exc:
+                        console.print(f"[yellow]⚠ HITL init failed: {exc}[/yellow]")
+
+                agent = CodebasePatchAgent(
+                    file_path=opts["patch_target"],
+                    patch_file=opts["patch_file"],
+                    output_dir=opts.get("out_dir", "./out"),
+                    config=global_config,
+                    llm_tools=llm_tools,
+                    hitl_context=hitl_context,
+                    enable_adapters=opts.get("enable_adapters", False),
+                    verbose=opts.get("verbose", False),
+                )
+
+                excel_path = os.path.join(opts.get("out_dir", "./out"), "detailed_code_review.xlsx")
+                result = agent.run_analysis(excel_path=excel_path)
+
+                console.print(f"\n[green]✅ Patch Analysis Complete![/green]")
+                console.print(f"[blue]📊 Original issues: {result.get('original_issue_count', 0)}[/blue]")
+                console.print(f"[blue]📊 Patched issues:  {result.get('patched_issue_count', 0)}[/blue]")
+                console.print(f"[bold]📊 NEW issues:      {result.get('new_issue_count', 0)}[/bold]")
+                console.print(f"[green]📄 Excel output:    {result.get('excel_path', 'N/A')}[/green]")
+
+                sys.exit(0)
+
+            except Exception as e:
+                console.print(f"[red]❌ Patch Analysis failed: {e}[/red]")
+                logger.error("Patch Analysis failed", exc_info=True)
+                sys.exit(1)
+
+        # ----------------------------------------------------
         # EXCLUSIVE LLM MODE (Bypass Workflow)
         # ----------------------------------------------------
         if opts.get("llm_exclusive"):
@@ -1105,6 +1247,29 @@ def main():
                 else:
                     llm_tools = None
 
+                # ── HITL context initialization for LLM-exclusive mode ─────────────────
+                hitl_context = None
+                if HITL_AVAILABLE and opts.get("enable_hitl"):
+                    try:
+                        hitl_config = HITLConfig(
+                            store_db_path=Path(opts.get("hitl_store_path", "./out/hitl/feedback.db")),
+                        )
+                        hitl_context = HITLContext(
+                            config=hitl_config,
+                            llm_tools=llm_tools,
+                            feedback_excel_path=opts.get("hitl_feedback_excel"),
+                            constraints_dir=opts.get("hitl_constraints_dir"),
+                        )
+                        console.print("[green]✓ HITL context initialised[/green]")
+                        stats = hitl_context.get_statistics()
+                        console.print(
+                            f"  Feedback store: {stats['total_decisions']} decisions, "
+                            f"{stats['total_constraints']} constraints"
+                        )
+                    except Exception as exc:
+                        console.print(f"[yellow]⚠ HITL initialisation failed: {exc}[/yellow]")
+                        hitl_context = None
+
                 # Initialize Agent with new config/llm_tools parameters
                 agent = CodebaseLLMAgent(
                     codebase_path=opts["codebase_path"],
@@ -1115,6 +1280,7 @@ def main():
                     max_files=opts.get("max_files", 10000),
                     use_ccls=opts.get("use_ccls", False),
                     file_to_fix=opts.get("file_to_fix"),
+                    hitl_context=hitl_context,
                 )
 
                 # Determine output filename
