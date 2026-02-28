@@ -1,0 +1,59 @@
+# =============================================================================
+# CARE — Codebase Analysis & Repair Engine for HDL
+# Verilog/SystemVerilog analysis framework
+# =============================================================================
+# Install:  pip install -r requirements.txt
+# Python:   3.12+ recommended
+# =============================================================================
+
+# --- LLM & AI Frameworks ---
+anthropic>=0.20.0
+langchain>=0.1.0
+langgraph>=0.0.1
+networkx>=3.0
+
+# --- Visualization & Data ---
+colorama==0.4.6
+openpyxl>=3.1.2
+pandas>=2.2.0
+plotly>=5.15.0
+streamlit>=1.24.0
+xlsxwriter
+matplotlib
+rich
+tqdm==4.65.0
+
+# --- System & Security ---
+python-dotenv
+psutil
+pylspclient
+
+# --- Database ---
+psycopg2-binary>=2.9.6
+sqlalchemy>=2.0.15
+langchain-postgres
+pgvector>=0.2.0
+
+# --- Optional HDL Tools (install separately via package manager or pip) ---
+# For cocotb (Python-based testbench integration):
+#   pip install cocotb
+#
+# For Verilator (recommended via system package manager):
+#   Ubuntu/Debian:  sudo apt-get install verilator
+#   macOS:          brew install verilator
+#   Manual:         https://verilator.org/
+#
+# For Verible (recommended via system package manager):
+#   Ubuntu/Debian:  sudo apt-get install verible
+#   macOS:          brew install verible
+#   Manual:         https://github.com/google/verible/releases
+#
+# For Yosys (open-source synthesis):
+#   Ubuntu/Debian:  sudo apt-get install yosys
+#   macOS:          brew install yosys
+#   Manual:         http://www.clifford.at/yosys/
+#
+# For Icarus Verilog (simulation):
+#   Ubuntu/Debian:  sudo apt-get install iverilog
+#   macOS:          brew install icarus-verilog
+#   Manual:         http://bleyer.org/icarus/

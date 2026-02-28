@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CARE — Everything You Need to Create Quality Silicon</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --navy:#0B1929;--deep:#061220;--teal:#00D4AA;--blue:#0EA5E9;
+    --purple:#8B5CF6;--gold:#F59E0B;--red:#EF4444;--white:#F0F4F8;
+    --gray:#94A3B8;--card:#0F2340;--border:rgba(0,212,170,.12);
+    --glow:0 0 40px rgba(0,212,170,.15);
+  }
+  html{scroll-behavior:smooth;font-size:16px}
+  body{
+    font-family:-apple-system,"SF Pro Display","Inter","Segoe UI",sans-serif;
+    background:var(--deep);color:var(--white);overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--teal);text-decoration:none;transition:color .2s}
+  a:hover{color:var(--blue)}
+
+  /* ── Animated grid background ─────────────────────────── */
+  .grid-bg{
+    position:fixed;inset:0;z-index:0;pointer-events:none;
+    background-image:
+      linear-gradient(rgba(0,212,170,.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,170,.04) 1px, transparent 1px);
+    background-size:60px 60px;
+    animation:gridPulse 8s ease-in-out infinite;
+  }
+  @keyframes gridPulse{
+    0%,100%{opacity:.6} 50%{opacity:1}
+  }
+
+  /* ── Navbar ───────────────────────────────────────────── */
+  nav{
+    position:fixed;top:0;left:0;right:0;z-index:100;
+    backdrop-filter:blur(20px);
+    background:rgba(6,18,32,.85);
+    border-bottom:1px solid var(--border);
+    padding:0 clamp(1rem,4vw,4rem);
+    display:flex;align-items:center;justify-content:space-between;
+    height:64px;
+  }
+  .logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:1.3rem;letter-spacing:-.5px}
+  .logo .chip{
+    width:32px;height:32px;border:2px solid var(--teal);border-radius:6px;
+    display:grid;place-items:center;position:relative;
+  }
+  .logo .chip::before{
+    content:"";width:14px;height:14px;background:var(--teal);border-radius:3px;
+    box-shadow:0 0 12px var(--teal);
+  }
+  .logo .chip .pin{position:absolute;background:var(--teal);border-radius:1px}
+  .logo .chip .pin.t{top:-6px;left:50%;transform:translateX(-50%);width:2px;height:6px}
+  .logo .chip .pin.b{bottom:-6px;left:50%;transform:translateX(-50%);width:2px;height:6px}
+  .logo .chip .pin.l{left:-6px;top:50%;transform:translateY(-50%);width:6px;height:2px}
+  .logo .chip .pin.r{right:-6px;top:50%;transform:translateY(-50%);width:6px;height:2px}
+  .logo span{background:linear-gradient(135deg,var(--teal),var(--blue));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+  .nav-links{display:flex;gap:2rem;align-items:center}
+  .nav-links a{color:var(--gray);font-size:.875rem;font-weight:500;transition:color .2s}
+  .nav-links a:hover{color:var(--white)}
+  .btn-nav{
+    padding:8px 20px;border-radius:8px;font-weight:600;font-size:.85rem;
+    background:linear-gradient(135deg,var(--teal),var(--blue));color:var(--navy);
+    border:none;cursor:pointer;transition:transform .2s,box-shadow .2s;
+  }
+  .btn-nav:hover{transform:translateY(-1px);box-shadow:0 4px 20px rgba(0,212,170,.3)}
+
+  /* ── Hero ──────────────────────────────────────────────── */
+  .hero{
+    min-height:100vh;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;text-align:center;padding:120px 2rem 80px;
+    position:relative;z-index:1;
+  }
+  .hero-badge{
+    display:inline-flex;align-items:center;gap:8px;
+    padding:6px 16px;border-radius:100px;
+    background:rgba(0,212,170,.08);border:1px solid rgba(0,212,170,.2);
+    font-size:.8rem;color:var(--teal);font-weight:600;margin-bottom:2rem;
+    animation:fadeUp .8s ease;
+  }
+  .hero-badge .dot{width:6px;height:6px;border-radius:50%;background:var(--teal);animation:blink 2s infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+  .hero h1{
+    font-size:clamp(2.5rem,6vw,5rem);font-weight:800;letter-spacing:-2px;
+    line-height:1.05;max-width:900px;
+    animation:fadeUp .8s ease .1s both;
+  }
+  .hero h1 .gradient{
+    background:linear-gradient(135deg,var(--teal) 0%,var(--blue) 50%,var(--purple) 100%);
+    -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  }
+  .hero p{
+    max-width:620px;color:var(--gray);font-size:1.15rem;line-height:1.7;
+    margin-top:1.5rem;animation:fadeUp .8s ease .2s both;
+  }
+  .hero-actions{
+    display:flex;gap:1rem;margin-top:2.5rem;flex-wrap:wrap;justify-content:center;
+    animation:fadeUp .8s ease .3s both;
+  }
+  .btn-primary{
+    padding:14px 32px;border-radius:12px;font-weight:700;font-size:1rem;
+    background:linear-gradient(135deg,var(--teal),var(--blue));color:var(--navy);
+    border:none;cursor:pointer;transition:all .3s;
+  }
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 8px 30px rgba(0,212,170,.35)}
+  .btn-secondary{
+    padding:14px 32px;border-radius:12px;font-weight:700;font-size:1rem;
+    background:transparent;color:var(--white);
+    border:1px solid rgba(255,255,255,.15);cursor:pointer;transition:all .3s;
+  }
+  .btn-secondary:hover{border-color:var(--teal);color:var(--teal)}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
+
+  /* ── Chip schematic decoration ──────────────────────────── */
+  .hero-visual{
+    margin-top:4rem;position:relative;width:100%;max-width:960px;
+    animation:fadeUp 1s ease .4s both;
+  }
+  .chip-diagram{
+    width:100%;aspect-ratio:16/7;border-radius:16px;
+    background:var(--card);border:1px solid var(--border);
+    position:relative;overflow:hidden;box-shadow:var(--glow);
+  }
+  .chip-diagram .scan-line{
+    position:absolute;top:0;left:0;right:0;height:2px;
+    background:linear-gradient(90deg,transparent,var(--teal),transparent);
+    animation:scan 4s linear infinite;
+  }
+  @keyframes scan{0%{top:-2px}100%{top:100%}}
+
+  /* ── Dashboard mockup inside hero ──────────────────────── */
+  .dashboard-mock{padding:24px;height:100%;display:flex;flex-direction:column;gap:16px}
+  .dash-header{display:flex;justify-content:space-between;align-items:center}
+  .dash-header h3{font-size:.95rem;font-weight:700;color:var(--white)}
+  .dash-header .status{font-size:.75rem;color:var(--teal);display:flex;align-items:center;gap:6px}
+  .dash-header .status::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--teal);animation:blink 1.5s infinite}
+  .dash-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  .metric-card{
+    background:rgba(0,212,170,.04);border:1px solid var(--border);
+    border-radius:10px;padding:16px;text-align:left;
+  }
+  .metric-card .label{font-size:.7rem;color:var(--gray);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
+  .metric-card .value{font-size:1.6rem;font-weight:800;margin-top:4px;font-variant-numeric:tabular-nums}
+  .metric-card .value.teal{color:var(--teal)}
+  .metric-card .value.blue{color:var(--blue)}
+  .metric-card .value.purple{color:var(--purple)}
+  .metric-card .value.gold{color:var(--gold)}
+  .metric-card .delta{font-size:.7rem;margin-top:4px}
+  .delta.up{color:var(--teal)}
+  .delta.down{color:var(--red)}
+  .dash-bars{display:flex;gap:12px;flex:1;align-items:flex-end}
+  .bar-group{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px}
+  .bar{
+    width:100%;border-radius:6px 6px 2px 2px;
+    transition:height 1.5s cubic-bezier(.22,1,.36,1);
+  }
+  .bar-label{font-size:.6rem;color:var(--gray);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+
+  /* ── Section common ────────────────────────────────────── */
+  section{position:relative;z-index:1;padding:100px clamp(1rem,4vw,4rem)}
+  .section-label{
+    font-size:.75rem;text-transform:uppercase;letter-spacing:2px;font-weight:700;
+    color:var(--teal);margin-bottom:1rem;
+  }
+  .section-title{
+    font-size:clamp(2rem,4vw,3rem);font-weight:800;letter-spacing:-1px;
+    max-width:700px;line-height:1.15;
+  }
+  .section-desc{color:var(--gray);max-width:560px;line-height:1.7;margin-top:1rem;font-size:1.05rem}
+
+  /* ── Features grid ─────────────────────────────────────── */
+  .features{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1.5rem;margin-top:3.5rem}
+  .feature-card{
+    background:var(--card);border:1px solid var(--border);border-radius:16px;
+    padding:32px;transition:all .35s;position:relative;overflow:hidden;
+  }
+  .feature-card:hover{
+    border-color:rgba(0,212,170,.3);
+    transform:translateY(-4px);
+    box-shadow:var(--glow);
+  }
+  .feature-card::before{
+    content:"";position:absolute;top:0;left:0;right:0;height:2px;
+    background:linear-gradient(90deg,var(--teal),var(--blue));
+    opacity:0;transition:opacity .3s;
+  }
+  .feature-card:hover::before{opacity:1}
+  .feature-icon{
+    width:48px;height:48px;border-radius:12px;display:grid;place-items:center;
+    font-size:1.4rem;margin-bottom:1.25rem;
+  }
+  .feature-card h3{font-size:1.1rem;font-weight:700;margin-bottom:.5rem}
+  .feature-card p{color:var(--gray);font-size:.9rem;line-height:1.6}
+  .icon-teal{background:rgba(0,212,170,.1);color:var(--teal)}
+  .icon-blue{background:rgba(14,165,233,.1);color:var(--blue)}
+  .icon-purple{background:rgba(139,92,246,.1);color:var(--purple)}
+  .icon-gold{background:rgba(245,158,11,.1);color:var(--gold)}
+  .icon-red{background:rgba(239,68,68,.1);color:var(--red)}
+  .icon-white{background:rgba(240,244,248,.08);color:var(--white)}
+
+  /* ── Pipeline section ──────────────────────────────────── */
+  .pipeline-flow{
+    display:flex;align-items:center;gap:0;margin-top:3.5rem;
+    overflow-x:auto;padding-bottom:1rem;
+  }
+  .pipe-step{
+    flex:0 0 auto;background:var(--card);border:1px solid var(--border);
+    border-radius:14px;padding:24px 28px;min-width:180px;text-align:center;
+    transition:all .3s;
+  }
+  .pipe-step:hover{border-color:rgba(0,212,170,.3);box-shadow:var(--glow)}
+  .pipe-step .num{
+    width:32px;height:32px;border-radius:50%;display:inline-grid;place-items:center;
+    font-size:.8rem;font-weight:800;margin-bottom:12px;
+    background:linear-gradient(135deg,var(--teal),var(--blue));color:var(--navy);
+  }
+  .pipe-step h4{font-size:.9rem;font-weight:700;margin-bottom:4px}
+  .pipe-step p{font-size:.75rem;color:var(--gray)}
+  .pipe-arrow{
+    flex:0 0 auto;color:var(--teal);font-size:1.5rem;padding:0 8px;opacity:.5;
+  }
+
+  /* ── Stats strip ───────────────────────────────────────── */
+  .stats-strip{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1.5rem;
+    margin-top:3.5rem;
+  }
+  .stat-box{text-align:center;padding:2rem}
+  .stat-box .number{
+    font-size:3rem;font-weight:900;letter-spacing:-2px;
+    background:linear-gradient(135deg,var(--teal),var(--blue));
+    -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  }
+  .stat-box .unit{font-size:.85rem;color:var(--gray);margin-top:.25rem;font-weight:500}
+
+  /* ── Analyzer cards ────────────────────────────────────── */
+  .analyzer-grid{
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-top:3rem;
+  }
+  .analyzer-chip{
+    background:var(--card);border:1px solid var(--border);border-radius:10px;
+    padding:16px;text-align:center;font-size:.8rem;font-weight:600;
+    transition:all .3s;cursor:default;
+  }
+  .analyzer-chip:hover{border-color:var(--teal);box-shadow:0 0 20px rgba(0,212,170,.1)}
+  .analyzer-chip .az-icon{font-size:1.3rem;margin-bottom:6px;display:block}
+
+  /* ── CTA section ───────────────────────────────────────── */
+  .cta-section{text-align:center;padding:120px 2rem}
+  .cta-section h2{
+    font-size:clamp(2rem,4vw,3.2rem);font-weight:800;letter-spacing:-1px;
+    margin-bottom:1rem;
+  }
+  .cta-section p{color:var(--gray);max-width:500px;margin:0 auto 2.5rem;font-size:1.05rem;line-height:1.7}
+
+  /* ── Footer ────────────────────────────────────────────── */
+  footer{
+    border-top:1px solid var(--border);padding:3rem clamp(1rem,4vw,4rem);
+    display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:1rem;
+    position:relative;z-index:1;
+  }
+  footer .copy{color:var(--gray);font-size:.8rem}
+  footer .foot-links{display:flex;gap:1.5rem}
+  footer .foot-links a{color:var(--gray);font-size:.8rem}
+
+  /* ── Scroll reveal ─────────────────────────────────────── */
+  .reveal{opacity:0;transform:translateY(30px);transition:all .7s cubic-bezier(.22,1,.36,1)}
+  .reveal.visible{opacity:1;transform:translateY(0)}
+
+  /* ── Responsive ────────────────────────────────────────── */
+  @media(max-width:768px){
+    .nav-links a:not(.btn-nav){display:none}
+    .dash-metrics{grid-template-columns:repeat(2,1fr)}
+    .pipeline-flow{flex-wrap:wrap}
+    .pipe-arrow{display:none}
+  }
+</style>
+</head>
+<body>
+
+<div class="grid-bg"></div>
+
+<!-- ── Navbar ──────────────────────────────────────────────── -->
+<nav>
+  <div class="logo">
+    <div class="chip">
+      <div class="pin t"></div><div class="pin b"></div>
+      <div class="pin l"></div><div class="pin r"></div>
+    </div>
+    <span>CARE</span>
+  </div>
+  <div class="nav-links">
+    <a href="#features">Features</a>
+    <a href="#pipeline">Pipeline</a>
+    <a href="#analyzers">Analyzers</a>
+    <a href="#metrics">Metrics</a>
+    <button class="btn-nav" onclick="window.open('http://localhost:8502', '_blank')">Get Started</button>
+  </div>
+</nav>
+
+<!-- ── Hero ────────────────────────────────────────────────── -->
+<section class="hero">
+  <div class="hero-badge"><span class="dot"></span> Built for Verilog &amp; SystemVerilog</div>
+  <h1>Everything you need to create<br><span class="gradient">quality silicon</span></h1>
+  <p>CARE is the multi-agent intelligence engine that improves HDL quality — catching synthesis hazards, CDC violations, and design flaws across your entire RTL codebase, then fixing them.</p>
+  <div class="hero-actions">
+    <button class="btn-primary" onclick="window.open('http://localhost:8502', '_blank')">Start Analysis</button>
+    <button class="btn-secondary" onclick="document.getElementById('pipeline').scrollIntoView({behavior:'smooth'})">See How It Works</button>
+  </div>
+
+  <div class="hero-visual">
+    <div class="chip-diagram">
+      <div class="scan-line"></div>
+      <div class="dashboard-mock">
+        <div class="dash-header">
+          <h3>CARE Design Health Dashboard</h3>
+          <div class="status">Analyzing 847 modules</div>
+        </div>
+        <div class="dash-metrics">
+          <div class="metric-card">
+            <div class="label">Health Score</div>
+            <div class="value teal" id="score1">0</div>
+            <div class="delta up">+12 from last run</div>
+          </div>
+          <div class="metric-card">
+            <div class="label">CDC Violations</div>
+            <div class="value gold" id="score2">0</div>
+            <div class="delta down">3 critical</div>
+          </div>
+          <div class="metric-card">
+            <div class="label">Modules Analyzed</div>
+            <div class="value blue" id="score3">0</div>
+            <div class="delta up">100% coverage</div>
+          </div>
+          <div class="metric-card">
+            <div class="label">Auto-Fixed</div>
+            <div class="value purple" id="score4">0</div>
+            <div class="delta up">94% success rate</div>
+          </div>
+        </div>
+        <div class="dash-bars" id="barChart"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Features ────────────────────────────────────────────── -->
+<section id="features">
+  <div class="section-label reveal">Capabilities</div>
+  <div class="section-title reveal">Everything you need to create<br>quality silicon</div>
+  <div class="section-desc reveal">Nine specialized analyzers, seven dependency services, LLM-powered review, and human-in-the-loop feedback — all orchestrated in a single pipeline.</div>
+
+  <div class="features">
+    <div class="feature-card reveal">
+      <div class="feature-icon icon-teal">&#9889;</div>
+      <h3>CDC Analysis</h3>
+      <p>Detects clock domain crossings without synchronizers, flags metastability risks, and verifies gray-code and FIFO-based crossing strategies.</p>
+    </div>
+    <div class="feature-card reveal">
+      <div class="feature-icon icon-blue">&#128268;</div>
+      <h3>Module Hierarchy</h3>
+      <p>Builds complete instantiation trees with NetworkX graph analysis. Detects cycles, orphan modules, and excessive fan-out across your design.</p>
+    </div>
+    <div class="feature-card reveal">
+      <div class="feature-icon icon-purple">&#128736;</div>
+      <h3>Synthesis Safety</h3>
+      <p>Catches latch inference, combinational loops, blocking in sequential blocks, and width mismatches before they reach the synthesis tool.</p>
+    </div>
+    <div class="feature-card reveal">
+      <div class="feature-icon icon-gold">&#128270;</div>
+      <h3>LLM Patch Review</h3>
+      <p>Reviews only changed lines with high-confidence, zero false-positive analysis. Categorizes by Synthesis, CDC, Reset, Timing, and Signal Integrity.</p>
+    </div>
+    <div class="feature-card reveal">
+      <div class="feature-icon icon-red">&#128295;</div>
+      <h3>Auto-Repair Engine</h3>
+      <p>Generates verified fixes with constraint-aware code generation. Preserves module signatures, clock domains, and reset strategies.</p>
+    </div>
+    <div class="feature-card reveal">
+      <div class="feature-icon icon-white">&#128202;</div>
+      <h3>Health Metrics</h3>
+      <p>Composite scoring across dependency, quality, complexity, maintainability, documentation, verification coverage, and security dimensions.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Pipeline ────────────────────────────────────────────── -->
+<section id="pipeline" style="background:rgba(0,212,170,.02)">
+  <div class="section-label reveal">Pipeline</div>
+  <div class="section-title reveal">Seven-stage analysis<br>in a single command</div>
+  <div class="section-desc reveal">From file discovery to branded PDF reports — CARE orchestrates every step of your RTL quality assessment.</div>
+
+  <div class="pipeline-flow reveal">
+    <div class="pipe-step"><div class="num">1</div><h4>File Discovery</h4><p>.v .sv .svh .vh</p></div>
+    <div class="pipe-arrow">&#10230;</div>
+    <div class="pipe-step"><div class="num">2</div><h4>9 Analyzers</h4><p>Batch static analysis</p></div>
+    <div class="pipe-arrow">&#10230;</div>
+    <div class="pipe-step"><div class="num">3</div><h4>Dependency Graph</h4><p>7 service modules</p></div>
+    <div class="pipe-arrow">&#10230;</div>
+    <div class="pipe-step"><div class="num">4</div><h4>Health Metrics</h4><p>Composite scoring</p></div>
+    <div class="pipe-arrow">&#10230;</div>
+    <div class="pipe-step"><div class="num">5</div><h4>LLM Enrichment</h4><p>Semantic analysis</p></div>
+    <div class="pipe-arrow">&#10230;</div>
+    <div class="pipe-step"><div class="num">6</div><h4>Reports</h4><p>Excel + PDF</p></div>
+    <div class="pipe-arrow">&#10230;</div>
+    <div class="pipe-step"><div class="num">7</div><h4>Visualization</h4><p>Mermaid + Vector DB</p></div>
+  </div>
+</section>
+
+<!-- ── Analyzers ──────────────────────────────────────────── -->
+<section id="analyzers">
+  <div class="section-label reveal">Analysis Engine</div>
+  <div class="section-title reveal">Nine analyzers.<br>Seven dependency services.</div>
+  <div class="section-desc reveal">Purpose-built static analysis for hardware description languages — not repurposed software tools.</div>
+
+  <div class="analyzer-grid reveal">
+    <div class="analyzer-chip"><span class="az-icon">&#9881;</span>AST Complexity</div>
+    <div class="analyzer-chip"><span class="az-icon">&#128230;</span>Module Metrics</div>
+    <div class="analyzer-chip"><span class="az-icon">&#128274;</span>Lint / DRC</div>
+    <div class="analyzer-chip"><span class="az-icon">&#128279;</span>Hierarchy</div>
+    <div class="analyzer-chip"><span class="az-icon">&#128203;</span>Documentation</div>
+    <div class="analyzer-chip"><span class="az-icon">&#128736;</span>Unused Module</div>
+    <div class="analyzer-chip"><span class="az-icon">&#9878;</span>Dependency Graph</div>
+    <div class="analyzer-chip"><span class="az-icon">&#128201;</span>Naming Convention</div>
+    <div class="analyzer-chip"><span class="az-icon">&#128300;</span>Testability</div>
+  </div>
+
+  <div style="margin-top:2.5rem" class="reveal">
+    <div class="section-label" style="margin-top:2rem">Dependency Services</div>
+  </div>
+  <div class="analyzer-grid reveal">
+    <div class="analyzer-chip"><span class="az-icon">&#127970;</span>Module Hierarchy</div>
+    <div class="analyzer-chip"><span class="az-icon">&#128196;</span>Include Resolution</div>
+    <div class="analyzer-chip"><span class="az-icon">&#128230;</span>Package Import</div>
+    <div class="analyzer-chip"><span class="az-icon">&#128260;</span>Parameter Propagation</div>
+    <div class="analyzer-chip"><span class="az-icon">&#128268;</span>Interface Binding</div>
+    <div class="analyzer-chip"><span class="az-icon">&#128256;</span>Generate Expansion</div>
+    <div class="analyzer-chip"><span class="az-icon">&#128269;</span>Symbol Table</div>
+  </div>
+</section>
+
+<!-- ── Metrics ────────────────────────────────────────────── -->
+<section id="metrics" style="background:rgba(0,212,170,.02)">
+  <div class="section-label reveal">By the Numbers</div>
+  <div class="section-title reveal">Built for production<br>silicon design teams</div>
+
+  <div class="stats-strip reveal">
+    <div class="stat-box"><div class="number">9</div><div class="unit">Static Analyzers</div></div>
+    <div class="stat-box"><div class="number">7</div><div class="unit">Dependency Services</div></div>
+    <div class="stat-box"><div class="number">6</div><div class="unit">Metric Adapters</div></div>
+    <div class="stat-box"><div class="number">3</div><div class="unit">Repair Agents</div></div>
+    <div class="stat-box"><div class="number">100</div><div class="unit">Point Health Score</div></div>
+  </div>
+</section>
+
+<!-- ── CTA ────────────────────────────────────────────────── -->
+<section class="cta-section" id="cta">
+  <div class="section-label reveal">Ready to Ship Better Silicon?</div>
+  <h2 class="reveal">Start analyzing your<br><span style="background:linear-gradient(135deg,var(--teal),var(--blue));-webkit-background-clip:text;-webkit-text-fill-color:transparent">RTL codebase today</span></h2>
+  <p class="reveal">Point CARE at your Verilog/SystemVerilog project and get a comprehensive health report in minutes — not weeks.</p>
+  <div class="reveal" style="display:flex;gap:1rem;justify-content:center;flex-wrap:wrap">
+    <button class="btn-primary" style="font-size:1.1rem;padding:16px 40px">Launch CARE Dashboard</button>
+    <button class="btn-secondary" style="font-size:1.1rem;padding:16px 40px">View Documentation</button>
+  </div>
+</section>
+
+<!-- ── Footer ─────────────────────────────────────────────── -->
+<footer>
+  <div class="copy">&copy; 2026 CARE — Codebase Analysis &amp; Repair Engine. All rights reserved.</div>
+  <div class="foot-links">
+    <a href="#">Documentation</a>
+    <a href="#">GitHub</a>
+    <a href="#">Contact</a>
+  </div>
+</footer>
+
+<script>
+// ── Scroll reveal ────────────────────────────────────────
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if(e.isIntersecting) e.target.classList.add('visible') });
+}, {threshold: 0.1});
+document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
+
+// ── Animated counters ────────────────────────────────────
+function animateCounter(id, target, suffix='') {
+  const el = document.getElementById(id);
+  if (!el) return;
+  let current = 0;
+  const step = Math.max(1, Math.floor(target / 60));
+  const timer = setInterval(() => {
+    current += step;
+    if (current >= target) { current = target; clearInterval(timer); }
+    el.textContent = current + suffix;
+  }, 25);
+}
+setTimeout(() => {
+  animateCounter('score1', 87, '/A');
+  animateCounter('score2', 14);
+  animateCounter('score3', 847);
+  animateCounter('score4', 231);
+}, 800);
+
+// ── Bar chart ────────────────────────────────────────────
+const barData = [
+  {label:'CDC', height:65, color:'var(--gold)'},
+  {label:'Lint', height:82, color:'var(--teal)'},
+  {label:'Width', height:45, color:'var(--red)'},
+  {label:'Reset', height:78, color:'var(--blue)'},
+  {label:'Hier', height:90, color:'var(--teal)'},
+  {label:'Docs', height:55, color:'var(--purple)'},
+  {label:'Tests', height:72, color:'var(--blue)'},
+  {label:'Cmplx', height:60, color:'var(--gold)'},
+];
+const chart = document.getElementById('barChart');
+if (chart) {
+  barData.forEach((d,i) => {
+    const g = document.createElement('div');
+    g.className = 'bar-group';
+    const b = document.createElement('div');
+    b.className = 'bar';
+    b.style.background = `linear-gradient(180deg, ${d.color}, ${d.color}44)`;
+    b.style.height = '0%';
+    const l = document.createElement('div');
+    l.className = 'bar-label';
+    l.textContent = d.label;
+    g.appendChild(b);
+    g.appendChild(l);
+    chart.appendChild(g);
+    setTimeout(() => { b.style.height = d.height + '%'; }, 1000 + i * 100);
+  });
+}
+</script>
+</body>
+</html>

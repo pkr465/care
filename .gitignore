@@ -1,0 +1,25 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Output directory
+out/
+
+# Environment files
+.env
+
+# OS files
+.DS_Store
+ccls.log
+.DS_Store
+*.tmp
+~$Big_Picture_Pipeline.pptx
+~$RE_Static_Analyzer_Comparison.docx
+Big_Picture_Pipeline.pptx
+CURE_Static_Analyzer_Comparison.docx
+static_analyzer_comparison.md
+CURE_Patch_Agent_Summary.docx

@@ -1,0 +1,370 @@
+# ============================================================================
+# CARE — Codebase Analysis & Repair Engine for HDL (Verilog/SystemVerilog)
+# Global Configuration
+# ============================================================================
+# YAML configuration file providing structured, typed, hierarchical settings.
+# Supports environment variable overrides via ${ENV_VAR} syntax.
+# Copy this file to global_config.yaml and customize for your environment.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Paths — Input, output, and working directories
+# Standard RTL directory structure assumed
+# ----------------------------------------------------------------------------
+paths:
+  source_dir: ./rtl
+  code_base_path: ./rtl
+  word_doc_folder: ./data/docs
+  doc_files: ./data/docs/*.docx
+
+  # Output directories
+  out_dir: ./out
+  generated_md_dir: ./out/md
+  flat_json_path: ./out/parseddata
+  report_json_path: ./out/parseddata
+  graph_path: ./out/diagrams
+  pdf_path: ./out/pdfs
+  img_dir: null # Set if image output is needed
+
+  # Prompt templates
+  prompt_file_path: ./prompts/prompt.md
+  chat_prompt_file_path: ./prompts/chat_prompt.md
+
+# ----------------------------------------------------------------------------
+# LLM — Language model provider and model selection
+# ----------------------------------------------------------------------------
+# Provider routing: set "model" to "provider::model_name".
+# Supported providers:
+#   anthropic  — Anthropic Claude (uses anthropic SDK)
+#   qgenie     — QGenie models    (uses qgenie.integrations.langchain.QGenieChat)
+#   vertexai   — Google Vertex AI  (uses langchain_google_vertexai)
+#   azure      — Azure OpenAI     (uses langchain_openai.AzureChatOpenAI)
+#
+# Examples:
+#   model: anthropic::claude-sonnet-4-20250514    # Claude via Anthropic API
+#   model: qgenie::qwen2.5-14b-1m                 # QGenie local/cloud model
+#   model: vertexai::gemini-2.5-pro                # Google Vertex AI
+#   model: azure::gpt-4.1                          # Azure OpenAI
+#
+# ── LLM Provider Toggle ─────────────────────────────────────────────────
+# Set "llm_provider" to choose which LLM backend module to use.
+# The wrapper in utils/common/llm_tools.py reads this value and
+# re-exports the matching provider — all agent imports stay the same.
+#   "qgenie"    → loads utils/common/llm_tools_qgenie.py    (QGenie SDK)
+#   "anthropic" → loads utils/common/llm_tools_anthropic.py  (Anthropic SDK)
+# When switching providers, also update the "model" and "coding_model"
+# values to use the correct provider prefix (e.g. "anthropic::..." or
+# "qgenie::...").
+# For HDL analysis, Claude's reasoning capabilities excel at design review.
+# ----------------------------------------------------------------------------
+llm:
+  # ── Provider toggle ────────────────────────────────────────────────────
+  # Switch between "qgenie" and "anthropic" to swap the LLM backend.
+  llm_provider: "anthropic"
+  #llm_provider: "qgenie" # "qgenie" | "anthropic"
+
+  # ── Primary analysis model ─────────────────────────────────────────────
+
+  # Change this single line to switch the entire engine between providers.
+  #model: "azure::gpt-5.2"
+  model: "anthropic::claude-sonnet-4-20250514"
+
+  # ── Coding / refactoring model (may differ from primary) ───────────────
+  coding_model: "anthropic::claude-sonnet-4-20250514"
+  #coding_model: "vertexai::gemini-3-pro-preview"
+  #coding_model: "anthropic::claude-4-sonnet"
+  #coding_model: "azure::gpt-5.2"
+  # ── Streamlit / UI model ───────────────────────────────────────────────
+  #streamlit_model: "azure::gpt-5.2"
+  streamlit_model: "anthropic::claude-sonnet-4-20250514"
+
+  # ── API keys — prefer ${ENV_VAR} overrides for secrets ─────────────────
+  llm_api_key: ${LLM_API_KEY}
+  qgenie_api_key: ${QGENIE_API_KEY}
+
+  # ── QGenie Specific Settings ───────────────────────────────────────────
+  chat_endpoint: "https://qgenie-chat.qualcomm.com"
+
+  # ── Request defaults ───────────────────────────────────────────────────
+  # Note: Claude Opus max output is 64000. Set conservatively below that.
+  # For HDL analysis, longer outputs helpful for design reviews and refactoring.
+  max_tokens: 16384
+  temperature: 0.1
+  timeout: 120 # seconds per request
+  max_retries: 2
+
+  # ── Intent extraction tuning ───────────────────────────────────────────
+  intent_max_tokens: 1000000
+  intent_temperature: 0.0
+
+  # ── Token budget for prompt truncation ─────────────────────────────────
+  max_prompt_tokens: 100000
+
+# ----------------------------------------------------------------------------
+# Embeddings — Vector embedding model selection
+# ----------------------------------------------------------------------------
+embeddings:
+  model: qgenie # qgenie | openai
+
+# ----------------------------------------------------------------------------
+# Database — PostgreSQL / PGVector configuration
+# ----------------------------------------------------------------------------
+database:
+  # SQLAlchemy connection string (app user)
+  connection: postgresql+psycopg2://codebase_analytics_user:postgres@localhost/codebase_analytics_db
+
+  host: localhost
+  port: 5432
+  database: codebase_analytics_db
+
+  # Application user
+  username: codebase_analytics_user
+  password: postgres
+
+  # Admin credentials (migrations/setup only)
+  admin_username: postgres
+  admin_password: postgres
+
+  # LangChain / pgvector collection tables
+  collection: codebase_analytics_data_2025
+  collection_tablename: langchain_pg_collection
+  embedding_tablename: langchain_pg_embedding
+  store_name: codebase_analytics_vector_db
+
+  # Connection pool tuning
+  pool_size: 5              # Number of persistent connections in the pool
+  pool_recycle: 3600        # Seconds before recycling a connection
+  pool_timeout: 30          # Seconds to wait for a pool connection
+  pool_pre_ping: true       # Verify connections before use (recommended)
+
+  # SSL/TLS — For remote servers. Set ssl_mode to 'require' or higher for production.
+  # Modes: disable | allow | prefer | require | verify-ca | verify-full
+  ssl_mode: prefer
+  ssl_ca: ""                # Path to CA certificate (for verify-ca / verify-full)
+  ssl_cert: ""              # Path to client certificate
+  ssl_key: ""               # Path to client private key
+
+  # Vector DB backend
+  vector_database: postgres # postgres | chroma | pinecone
+
+# ----------------------------------------------------------------------------
+# Scanning — File discovery exclusions (HDL-specific)
+# ----------------------------------------------------------------------------
+# Both options accept multiple entries as YAML lists.
+# CLI flags --exclude-dirs / --exclude-globs are MERGED with these (not replaced).
+scanning:
+  # Directory names to skip during HDL analysis.
+  # These are added on top of the built-in defaults (.git, build, node_modules, etc.)
+  exclude_dirs:
+    - sim_results
+    - synthesis
+    - implementation
+    - .Xil
+    - work
+    - xsim.dir
+    - questa_lib
+    - modelsim_lib
+
+  # Glob patterns to skip (matched against the relative path from codebase root).
+  # Patterns are case-insensitive and use fnmatch syntax.
+  exclude_globs:
+    - "*.vcd"
+    - "*.wlf"
+    - "*.fsdb"
+    - "*.vpd"
+    - "*.saif"
+    - "*/sim/*"
+    - "*/generated/*"
+
+# ----------------------------------------------------------------------------
+# Logging & Debugging
+# ----------------------------------------------------------------------------
+logging:
+  level: INFO # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  verbose: false
+  debug: false
+
+# ----------------------------------------------------------------------------
+# Email — Report delivery via SMTP
+# ----------------------------------------------------------------------------
+email:
+  recipients: []
+  smtp_host: "" # e.g., smtp.gmail.com
+  smtp_port: 587
+  smtp_username: ""
+  smtp_password: ""              # Set your SMTP password here for email delivery
+  smtp_use_tls: true
+  sender_email: ""
+  sender_name: "HDL Analysis Agent"
+  max_attachment_size: 15728640 # 15 MB in bytes
+  save_html_on_failure: true
+
+# ----------------------------------------------------------------------------
+# External Tools — CLI executables
+# ----------------------------------------------------------------------------
+tools:
+  pandoc_path: pandoc
+  mmdc_path: mmdc # Mermaid CLI
+  wmf2svg_path: null # WMF to SVG converter
+
+# ----------------------------------------------------------------------------
+# Mermaid Diagrams — Rendering configuration
+# ----------------------------------------------------------------------------
+mermaid:
+  background_color: white
+  theme: default # default | dark | forest | neutral
+  width: null # Auto
+  height: null # Auto
+  scale: null # CSS scale factor
+  timeout_seconds: 60
+  keep_intermediate_png: true
+
+# ----------------------------------------------------------------------------
+# Excel Reports — Styling configuration
+# ----------------------------------------------------------------------------
+excel:
+  pass_color: "C6EFCE"
+  fail_color: "FFC7CE"
+  warn_color: "FFEB9C"
+  alt_row_color: "F3F3F3"
+  header_bg_color: "4F81BD"
+  header_font_color: "FFFFFF"
+  freeze_header: true
+  auto_filter: true
+  min_column_width: 12
+  max_column_width: 60
+
+# ----------------------------------------------------------------------------
+# Hierarchy Builder — Verible & Verilator configuration for HDL analysis
+# Replaces CCLS for Verilog/SystemVerilog design hierarchy extraction
+# ----------------------------------------------------------------------------
+hierarchy_builder:
+  verible_executable: verible-verilog-syntax
+  verilator_executable: verilator
+
+  # Timeouts (seconds)
+  version_check_timeout: 10
+  indexing_timeout_seconds: 300
+  lsp_endpoint_timeout: 30
+  sigterm_timeout: 5
+  sigkill_timeout: 3
+
+  # Caching
+  cache_metadata_filename: .cache_metadata.json
+  file_cache_maxsize: 1024
+
+  # Module hierarchy traversal
+  max_hierarchy_depth: 10
+  max_modules_per_level: 50
+  max_port_depth: 3
+
+  # Connection pool
+  pool_size: 4
+  pool_idle_timeout: 300
+  pool_health_check_interval: 60
+
+  # HDL-specific indexing patterns
+  verible_ignore_patterns:
+    - "*/test/*"
+    - "*/sim/*"
+    - "*/vendor/*"
+  log_output_truncation: 2000
+  log_error_truncation: 1000
+  virtual_snippet_filename: "__snippet__.v"
+
+# ────────────────────────────────────────────────────────────────────────────
+# HITL (Human-in-the-Loop) — Persistent feedback store and RAG-based constraint
+# injection for HDL design rules. Enable via --enable-hitl CLI flag.
+# ────────────────────────────────────────────────────────────────────────────
+hitl:
+  enable: false
+  # PostgreSQL connection (uses database.connection by default)
+  # store_db_path is deprecated — HITL now uses PostgreSQL
+  store_db_path: "./out/hitl/feedback.db"
+  rag_top_k: 5
+  rag_similarity_threshold: 0.6
+  excel_analysis_sheet: "Analysis"
+  feedback_column: "Feedback"
+  design_rules_column: "Design Rules"
+  constraint_file_pattern: "**/*_design_rules.md"
+  enable_prompt_augmentation: true
+  rag_context_max_tokens: 2000
+  auto_persist_feedback: true
+
+# ────────────────────────────────────────────────────────────────────────────
+# Context — Include context injection for HDL analysis
+# Parses `include'd files to extract parameter definitions, macro defines,
+# typedef declarations, and interface definitions. Injects relevant context
+# into each LLM chunk to reduce false positives (e.g., parameter mismatches).
+#
+# Context layers (all enabled by default, degrade gracefully if unavailable):
+#   1. IncludeContextBuilder   — parameters/macros from `include'd files
+#   2. ContextValidator        — per-chunk port/parameter validation tracing
+#   3. HierarchyCallStackAnalyzer — cross-module instantiation evidence
+#   4. ModuleParameterValidator   — per-module parameter validation status
+# ────────────────────────────────────────────────────────────────────────────
+context:
+  enable_include_context: true
+  hdl_include_paths: []            # Additional -I style paths (relative to codebase root)
+  max_include_depth: 2             # How deep to follow `include chains (0 = direct only)
+  max_context_chars: 6000          # Max chars for include context per chunk (~1500 tokens)
+  exclude_system_packages: true    # Skip standard SV packages
+
+  # Include files to exclude from context injection.
+  # Supports exact names ("defines.vh"), basenames, and fnmatch glob patterns ("defines_*.vh").
+  # CLI flag --exclude-includes is MERGED with these (not replaced).
+  exclude_includes: []
+  #  - "auto_generated.vh"
+  #  - "defines_*.vh"
+  #  - "vendor/third_party.vh"
+
+# ────────────────────────────────────────────────────────────────────────────
+# Synthesis — Target technology and timing constraints for HDL analysis
+# Used to inform static analysis with timing/resource context
+# ────────────────────────────────────────────────────────────────────────────
+synthesis:
+  target_technology: fpga  # fpga | asic
+  target_device: ""  # e.g., "xcvu9p" for Xilinx, "sky130" for SkyWater
+  clock_period_ns: 10.0  # target clock period for timing analysis hints
+  reset_strategy: async  # async | sync
+
+# ────────────────────────────────────────────────────────────────────────────
+# EDA Tools — HDL tool executables and paths
+# Supports Veribk, Verilator, Yosys, and Icarus Verilog
+# ────────────────────────────────────────────────────────────────────────────
+eda_tools:
+  verilator_path: verilator
+  verible_syntax_path: verible-verilog-syntax
+  verible_lint_path: verible-verilog-lint
+  iverilog_path: iverilog  # Icarus Verilog (optional)
+  yosys_path: yosys  # Open source synthesis (optional)
+
+# ────────────────────────────────────────────────────────────────────────────
+# Dependency Analysis — HDL module/include/package dependency graph
+# ────────────────────────────────────────────────────────────────────────────
+dependency_analysis:
+  # Additional include search paths (relative to codebase root)
+  include_paths: []
+  # Maximum depth for following `include chains
+  max_include_depth: 2
+  # Maximum module hierarchy depth before flagging
+  max_hierarchy_depth: 10
+  # Use Verible for enhanced parsing accuracy (falls back to regex)
+  use_verible: true
+  verible_timeout_seconds: 30
+  # Package import resolution
+  resolve_package_imports: true
+  exclude_system_packages: true  # Skip std, ieee, uvm, etc.
+  # Parameter and interface tracking
+  track_parameters: true
+  track_interfaces: true
+  # Debug output
+  debug: false
+
+# ────────────────────────────────────────────────────────────────────────────
+# Telemetry — Silent usage tracking for framework analytics
+# Uses the same PostgreSQL database (codebase_analytics_db).
+# ────────────────────────────────────────────────────────────────────────────
+telemetry:
+  enable: true
+  # Uses database.connection by default — no separate config needed
